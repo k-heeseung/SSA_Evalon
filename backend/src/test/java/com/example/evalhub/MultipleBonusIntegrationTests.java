@@ -39,9 +39,10 @@ class MultipleBonusIntegrationTests {
 
     @BeforeEach void setup() throws Exception {
         var response = manager.createProgram(mapper.readValue("""
-            {"title":"bonus-test","type":"MODULE_A","status":"DRAFT","bonusEnabled":true,
-             "bonusItems":[{"name":"지역 기업","maxScore":3},{"name":"교육 수료","maxScore":2}]}
-            """, CreateProgramRequest.class));
+            {"title":"bonus-test","type":"MODULE_A","bonusEnabled":true,
+             "bonusItems":[{"name":"지역 기업","maxScore":3},{"name":"교육 수료","maxScore":2}],
+             "criteria":[],"formFields":[]}
+            """, SaveProgramRequest.class), null).program();
         programId = response.id(); first = response.bonusItems().get(0).id(); second = response.bonusItems().get(1).id();
         var p = programs.findById(programId).orElseThrow();
         teamId = teams.save(new Team(p, "team", ParticipantType.TEAM, null, "team", null, null)).getId();
@@ -60,10 +61,14 @@ class MultipleBonusIntegrationTests {
     UpdateTeamBonusRequest scores(BigDecimal a, BigDecimal b) {
         return new UpdateTeamBonusRequest(List.of(new UpdateTeamBonusRequest.Item(first,a), new UpdateTeamBonusRequest.Item(second,b)));
     }
-    UpdateProgramRequest update(List<BonusItemRequest> items, boolean enabled) throws Exception {
-        var node = mapper.createObjectNode().put("bonusEnabled",enabled);
+    // 저장 API는 화면 전체 상태를 받으므로 기존 평가 기준도 함께 보낸다. (빠뜨리면 삭제 대상이 된다)
+    SaveProgramRequest update(List<BonusItemRequest> items, boolean enabled) throws Exception {
+        var criterion = criteria.findById(criterionId).orElseThrow();
+        var node = mapper.createObjectNode().put("title","bonus-test").put("type","MODULE_A").put("bonusEnabled",enabled);
         node.set("bonusItems",mapper.valueToTree(items));
-        return mapper.treeToValue(node,UpdateProgramRequest.class);
+        node.set("criteria",mapper.valueToTree(List.of(new SaveProgramRequest.Criterion(criterionId,criterion.getName(),null,criterion.getMaxScore()))));
+        node.set("formFields",mapper.createArrayNode());
+        return mapper.treeToValue(node,SaveProgramRequest.class);
     }
     List<BonusItemRequest> items(BigDecimal max) {
         return List.of(new BonusItemRequest(first,"지역 기업",max),new BonusItemRequest(second,"교육 수료",new BigDecimal("2")));
@@ -79,7 +84,7 @@ class MultipleBonusIntegrationTests {
             new BonusItemRequest(second,"교육 수료",new BigDecimal("2")),
             new BonusItemRequest(null,"신규 항목",new BigDecimal("30")),
             new BonusItemRequest(first,"지역 기업",new BigDecimal("3"))),true));
-        Long added = response.bonusItems().get(1).id();
+        Long added = response.program().bonusItems().get(1).id();
         assertThat(added).isNotNull();
         manager.updateTeamBonus(programId,teamId,new UpdateTeamBonusRequest(List.of(
             new UpdateTeamBonusRequest.Item(second,BigDecimal.ZERO),
@@ -136,9 +141,9 @@ class MultipleBonusIntegrationTests {
     @Test void viewingAloneDoesNotLockDeletionAndItemIdsArePreserved() throws Exception {
         evaluator.getEvaluationView(assignmentId,teamId,evaluatorId);
         var response=manager.updateProgram(programId,update(List.of(new BonusItemRequest(first,"변경",new BigDecimal("3"))),true));
-        assertThat(response.bonusItems()).hasSize(1);
-        assertThat(response.bonusItems().get(0).id()).isEqualTo(first);
-        assertThat(response.evaluationStarted()).isFalse();
+        assertThat(response.program().bonusItems()).hasSize(1);
+        assertThat(response.program().bonusItems().get(0).id()).isEqualTo(first);
+        assertThat(response.program().evaluationStarted()).isFalse();
     }
     @Test void scoredItemCanBeDeletedBeforeEvaluatorStartsAndItsScoreIsRemoved() throws Exception {
         manager.updateTeamBonus(programId,teamId,scores(new BigDecimal("3"),new BigDecimal("2")));
@@ -173,9 +178,9 @@ class MultipleBonusIntegrationTests {
         start(false); var list=new ArrayList<>(items(new BigDecimal("4")));
         list.add(new BonusItemRequest(null,"특허",new BigDecimal("5")));
         var response=manager.updateProgram(programId,update(list,true));
-        assertThat(response.bonusItems()).hasSize(3);
-        assertThat(response.bonusItems().get(2).id()).isNotNull();
-        assertThat(response.evaluationStarted()).isTrue();
+        assertThat(response.program().bonusItems()).hasSize(3);
+        assertThat(response.program().bonusItems().get(2).id()).isNotNull();
+        assertThat(response.program().evaluationStarted()).isTrue();
     }
     @Test @WithMockUser(roles="EVALUATOR") void evaluatorCannotWriteBonus() throws Exception {
         mvc.perform(post("/api/programs/"+programId+"/teams/"+teamId+"/bonus").with(csrf())

@@ -2,11 +2,10 @@ import api from './client';
 
 export const getPrograms = () => api.get('/programs');
 export const getOpenPrograms = () => api.get('/programs/open');
-// Program period requests accept *At offset datetimes; responses include schedule.
-// Existing date-only payloads remain supported during the frontend transition.
+// 프로그램 편집 화면의 전체 상태(기본 정보·평가 기준·지원 양식 항목)를 한 트랜잭션으로 저장한다.
+// 응답: { program, criteria, formFields }. publish: true면 같은 요청에서 개설까지 한다.
 export const createProgram = (data) => api.post('/programs', data);
-export const updateProgram = (programId, data) => api.post(`/programs/${programId}`, data);
-export const publishProgram = (programId) => api.post(`/programs/${programId}/publish`);
+export const updateProgram = (programId, data) => api.put(`/programs/${programId}`, data);
 export const deleteProgram = (programId) => api.delete(`/programs/${programId}`);
 
 export const getTeams = (programId) => api.get(`/programs/${programId}/teams`);
@@ -24,12 +23,8 @@ export const removeTeamMember = (teamId, memberId) => api.delete(`/teams/${teamI
 export const lookupUser = (email) => api.get('/users/lookup', { params: { email } });
 
 export const getFormFields = (programId) => api.get(`/programs/${programId}/form-fields`);
-export const replaceFormFields = (programId, data) => api.put(`/programs/${programId}/form-fields`, data);
 
 export const getCriteria = (programId) => api.get(`/programs/${programId}/criteria`);
-export const createCriterion = (programId, data) => api.post(`/programs/${programId}/criteria`, data);
-export const updateCriterion = (programId, criterionId, data) => api.put(`/programs/${programId}/criteria/${criterionId}`, data);
-export const deleteCriterion = (programId, criterionId) => api.delete(`/programs/${programId}/criteria/${criterionId}`);
 
 export const getAssignmentsByProgram = (programId) => api.get(`/programs/${programId}/assignments`);
 export const getEvaluatorsByProgram = (programId) => api.get(`/programs/${programId}/evaluators`);

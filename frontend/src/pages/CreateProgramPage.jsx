@@ -2,9 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
-  createProgram, updateProgram, publishProgram, getPrograms, deleteProgram,
-  getCriteria, createCriterion, updateCriterion, deleteCriterion,
-  getFormFields, replaceFormFields,
+  createProgram, updateProgram, getPrograms, deleteProgram,
+  getCriteria, getFormFields,
 } from '../api/programs';
 import PageHeader from '../components/PageHeader';
 import './CreateProgramPage.css';
@@ -20,6 +19,24 @@ import { useLiveApiQuery } from '../query/useApiQuery';
 
 let criterionKeySeq = 0;
 const newCriterion = () => ({ key: `c${Date.now()}_${criterionKeySeq++}`, id: null, name: '', description: '', maxScore: '10' });
+
+// 서버 응답을 화면 편집용 상태로 바꾼다. 서버 id를 들고 있어야 다음 저장 때 같은 항목을 제자리 수정한다.
+const toFormItems = (fields) => fields.map((f) => ({
+  id: f.id,
+  serverId: f.id, // 저장 시 이 id로 기존 항목을 제자리 수정한다. (답변 보존)
+  label: f.label ?? '',
+  required: !!f.required,
+  type: normalizeFieldType(f.fieldType),
+  options: Array.isArray(f.options) ? f.options : [],
+}));
+
+const toCriteriaItems = (criteria) => criteria.map((c) => ({
+  key: `c${c.id}`,
+  id: c.id,
+  name: c.name ?? '',
+  description: c.description ?? '',
+  maxScore: c.maxScore != null ? String(Number(c.maxScore)) : '10',
+}));
 
 const DragIcon = () => (
   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -88,7 +105,6 @@ export default function CreateProgramPage() {
   const [programStatus, setProgramStatus] = useState(null);
   const [formItems, setFormItems] = useState([]);
   const [criteriaItems, setCriteriaItems] = useState([]);
-  const [removedCriterionIds, setRemovedCriterionIds] = useState([]);
   const [attachmentsEnabled, setAttachmentsEnabled] = useState(false);
   const [maxAttachments, setMaxAttachments] = useState('1');
   const [bonusEnabled, setBonusEnabled] = useState(false);
@@ -146,18 +162,7 @@ export default function CreateProgramPage() {
       queryKey: queryKeys.formFields(id),
       queryFn: async () => (await getFormFields(id)).data,
     })
-      .then((data) => {
-        setFormItems(
-          data.map((f) => ({
-            id: f.id,
-            serverId: f.id, // 저장 시 이 id로 기존 항목을 제자리 수정한다. (답변 보존)
-            label: f.label ?? '',
-            required: !!f.required,
-            type: normalizeFieldType(f.fieldType),
-            options: Array.isArray(f.options) ? f.options : [],
-          }))
-        );
-      })
+      .then((data) => setFormItems(toFormItems(data)))
       .catch(() => {});
   };
 
@@ -167,18 +172,7 @@ export default function CreateProgramPage() {
       queryKey: queryKeys.criteria(id),
       queryFn: async () => (await getCriteria(id)).data,
     })
-      .then((data) => {
-        setCriteriaItems(
-          data.map((c) => ({
-            key: `c${c.id}`,
-            id: c.id,
-            name: c.name ?? '',
-            description: c.description ?? '',
-            maxScore: c.maxScore != null ? String(Number(c.maxScore)) : '10',
-          }))
-        );
-        setRemovedCriterionIds([]);
-      })
+      .then((data) => setCriteriaItems(toCriteriaItems(data)))
       .catch(() => {});
   };
 
@@ -241,6 +235,44 @@ export default function CreateProgramPage() {
     bonusItems: bonusEnabled ? bonusItems.map((item) => ({ id: item.id, name: item.name.trim(), maxScore: item.maxScore === '' ? null : Number(item.maxScore) })) : undefined,
     participantType,
   });
+
+  // 저장 요청 본문. 화면의 전체 상태를 보내고 서버가 한 트랜잭션으로 저장한다. (배열 순서 = 표시 순서)
+  // 기존 항목은 서버 id를 함께 보내 제자리 수정되게 한다. id 없이 보내면 서버가 새 항목으로 보고
+  // 기존 항목을 삭제하게 되는데, 그러면 지원자가 제출한 답변까지 cascade로 사라진다.
+  const savePayload = ({ publish = false } = {}) => ({
+    ...formData(),
+    criteria: criteriaItems
+      .filter((item) => item.name.trim())
+      .map((item) => ({
+        id: item.id ?? null,
+        name: item.name.trim(),
+        description: item.description.trim() || null,
+        maxScore: Number(item.maxScore),
+      })),
+    formFields: formItems
+      .filter((item) => item.label.trim())
+      .map((item) => ({
+        id: item.serverId ?? null,
+        label: item.label.trim(),
+        fieldType: item.type,
+        required: !!item.required,
+        options: isOptionType(item.type)
+          ? (item.options || []).map((o) => o.trim()).filter(Boolean)
+          : [],
+      })),
+    publish,
+  });
+
+  // 저장 응답으로 화면 상태와 쿼리 캐시를 맞춘다. 새로 생긴 항목의 id를 채워 재저장 시 중복 생성을 막는다.
+  const applySaved = ({ program, criteria, formFields }) => {
+    setOriginalProgram(program);
+    hydrateBonusItems(program);
+    setCriteriaItems(toCriteriaItems(criteria));
+    setFormItems(toFormItems(formFields));
+    queryClient.setQueryData(queryKeys.criteria(program.id), criteria);
+    queryClient.setQueryData(queryKeys.formFields(program.id), formFields);
+    queryClient.invalidateQueries({ queryKey: queryKeys.programs });
+  };
 
   const extractError = (err) =>
     err.response?.data?.message
@@ -310,29 +342,12 @@ export default function CreateProgramPage() {
     setSaving(true);
     setError('');
     try {
-      let pid;
-      if (draftId) {
-        const res = await updateProgram(draftId, formData());
-        setOriginalProgram(res.data);
-        hydrateBonusItems(res.data);
-        setDrafts((prev) => prev.filter((draft) => draft.id !== draftId).concat(res.data));
-        pid = draftId;
-      } else {
-        const res = await createProgram({ ...formData(), status: 'DRAFT' });
-        setDraftId(res.data.id);
-        setOriginalProgram(res.data);
-        hydrateBonusItems(res.data);
-        setDrafts((prev) => prev.filter((d) => d.id !== res.data.id).concat(res.data));
-        pid = res.data.id;
-      }
-      await syncCriteria(pid);
-      await syncFormFields(pid);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.criteria(pid) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.formFields(pid) }),
-      ]);
-      loadCriteria(pid);   // 새로 생성된 항목의 id를 채워 재저장 시 중복 생성을 막는다.
-      loadFormFields(pid); // 저장된 제출 항목의 id로 갱신한다.
+      const payload = savePayload();
+      const res = draftId ? await updateProgram(draftId, payload) : await createProgram(payload);
+      const saved = res.data.program;
+      setDraftId(saved.id);
+      setDrafts((prev) => prev.filter((d) => d.id !== saved.id).concat(saved));
+      applySaved(res.data);
       showToast('임시 저장되었습니다.');
     } catch (err) {
       setError(`임시 저장 실패: ${extractError(err)}`);
@@ -356,11 +371,8 @@ export default function CreateProgramPage() {
     setSaving(true);
     setError('');
     try {
-      const res = await updateProgram(Number(programId), formData());
-      setOriginalProgram(res.data);
-      hydrateBonusItems(res.data);
-      await syncCriteria(Number(programId));
-      await syncFormFields(Number(programId));
+      const res = await updateProgram(Number(programId), savePayload());
+      applySaved(res.data);
       navigate(`/operations/programs/${programId}`);
     } catch (err) {
       setError(`저장 실패: ${extractError(err)}`);
@@ -369,7 +381,8 @@ export default function CreateProgramPage() {
     }
   };
 
-  // 구성 저장이 모두 성공한 뒤 개설한다. 실제 상태는 서버가 기간으로 계산한다.
+  // 구성 저장과 개설을 한 요청으로 처리한다. 서버가 한 트랜잭션으로 묶으므로 실패하면 아무것도 저장되지 않는다.
+  // 실제 상태는 서버가 기간으로 계산한다.
   const handleCreate = async () => {
     if (!title.trim())          { showToast('프로그램 명을 입력해주세요.', 'error'); return; }
     if (!validateBonus()) return;
@@ -380,22 +393,9 @@ export default function CreateProgramPage() {
     setSubmitting(true);
     setError('');
     try {
-      let pid;
-      if (draftId) {
-        const res = await updateProgram(draftId, formData());
-        setOriginalProgram(res.data);
-        hydrateBonusItems(res.data);
-        pid = draftId;
-      } else {
-        const res = await createProgram({ ...formData(), status: 'DRAFT' });
-        setDraftId(res.data.id);
-        setOriginalProgram(res.data);
-        hydrateBonusItems(res.data);
-        pid = res.data.id;
-      }
-      await syncCriteria(pid);
-      await syncFormFields(pid);
-      await publishProgram(pid);
+      const payload = savePayload({ publish: true });
+      const res = draftId ? await updateProgram(draftId, payload) : await createProgram(payload);
+      applySaved(res.data);
       navigate('/operations/programs');
     } catch (err) {
       setError(`생성 실패: ${extractError(err)}`);
@@ -483,50 +483,7 @@ export default function CreateProgramPage() {
 
   const removeCriterion = (key) => {
     if (criteriaLocked) return;
-    setCriteriaItems((prev) => {
-      const target = prev.find((item) => item.key === key);
-      if (target?.id) setRemovedCriterionIds((ids) => [...ids, target.id]);
-      return prev.filter((item) => item.key !== key);
-    });
-  };
-
-  // 로컬 평가 항목을 백엔드에 반영한다. (삭제 → 수정/생성, displayOrder는 화면 순서)
-  const syncCriteria = async (pid) => {
-    await Promise.all(removedCriterionIds.map((cid) => deleteCriterion(pid, cid)));
-    await Promise.all(
-      criteriaItems
-        .filter((item) => item.name.trim())
-        .map((item, index) => {
-          const payload = {
-            name: item.name.trim(),
-            description: item.description.trim() || null,
-            maxScore: Number(item.maxScore),
-            displayOrder: index + 1,
-          };
-          return item.id
-            ? updateCriterion(pid, item.id, payload)
-            : createCriterion(pid, payload);
-        })
-    );
-  };
-
-  // 로컬 제출 항목을 백엔드에 저장한다. (화면 순서가 곧 저장 순서)
-  // 기존 항목은 serverId를 함께 보내 제자리 수정되게 한다. id 없이 보내면 서버가 새 항목으로 보고
-  // 기존 항목을 삭제하게 되는데, 그러면 지원자가 제출한 답변까지 cascade로 사라진다.
-  const syncFormFields = async (pid) => {
-    await replaceFormFields(pid, {
-      fields: formItems
-        .filter((item) => item.label.trim())
-        .map((item) => ({
-          id: item.serverId ?? null,
-          label: item.label.trim(),
-          fieldType: item.type,
-          required: !!item.required,
-          options: isOptionType(item.type)
-            ? (item.options || []).map((o) => o.trim()).filter(Boolean)
-            : [],
-        })),
-    });
+    setCriteriaItems((prev) => prev.filter((item) => item.key !== key));
   };
 
   // 드래그앤드롭

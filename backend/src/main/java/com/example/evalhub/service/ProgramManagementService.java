@@ -65,36 +65,275 @@ public class ProgramManagementService {
         this.passwordEncoder = passwordEncoder;
     }
 
-    // 프로그램 생성의 기준 데이터만 저장한다. 팀, 질문, 배정은 별도 API에서 단계적으로 등록한다.
+    // 프로그램 편집 화면의 전체 상태(기본 정보·평가 기준·지원 양식 항목)를 한 트랜잭션으로 생성한다.
+    // 중간에 하나라도 실패하면 전부 롤백되어 반쯤 만들어진 DRAFT가 남지 않는다.
+    // managerId는 요청 본문이 아니라 로그인 정보로 정한다. (MANAGER가 만들면 본인, 그 외에는 null)
     @Transactional
-    public ProgramResponse createProgram(CreateProgramRequest request) {
-        if (request.status() != null && request.status() != Status.DRAFT && request.status() != Status.ACTIVE) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "생성 시에는 임시저장(DRAFT) 또는 개설(ACTIVE)만 선택할 수 있습니다. 실제 상태는 기간으로 결정됩니다.");
-        }
-        User manager = request.managerId() == null ? null : userRepository.findById(request.managerId())
+    public ProgramEditorResponse createProgram(SaveProgramRequest request, Long managerId) {
+        validateProgramBasics(request, true);
+        User manager = managerId == null ? null : userRepository.findById(managerId)
                 .orElseThrow(() -> notFound("Manager not found."));
-        Instant applicationStart = ProgramTimes.resolve(request.applicationStartAt(), request.applicationStart(), null, null, false);
-        Instant applicationDeadline = ProgramTimes.resolve(request.applicationDeadlineAt(), request.applicationDeadline(), null, null, true);
-        Instant evaluationStart = ProgramTimes.resolve(request.evaluationStartAt(), request.evaluationStart(), null, null, false);
-        Instant evaluationDeadline = ProgramTimes.resolve(request.evaluationDeadlineAt(), request.evaluationDeadline(), null, null, true);
+        Instant applicationStart = ProgramTimes.resolve(request.applicationStartAt(), null, null, null, false);
+        Instant applicationDeadline = ProgramTimes.resolve(request.applicationDeadlineAt(), null, null, null, true);
+        Instant evaluationStart = ProgramTimes.resolve(request.evaluationStartAt(), null, null, null, false);
+        Instant evaluationDeadline = ProgramTimes.resolve(request.evaluationDeadlineAt(), null, null, null, true);
         validateProgramDates(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
 
-        Program program = new Program(manager, request.title(), request.description(), request.type(), request.applicationStart(), request.applicationDeadline(), request.evaluationStart(), request.evaluationDeadline(), request.eligibilityCriteria());
+        Program program = new Program(manager, request.title().trim(), request.description(), request.type(),
+                null, null, null, null, request.eligibilityCriteria());
         program.updateSchedule(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
-        if (request.status() != null) {
-            program.changeStatus(request.status());
-        }
+        program.changeStatus(Status.DRAFT);
         program.updateAttachmentSettings(request.attachmentsEnabled(), request.maxAttachments());
         program.updateParticipantType(request.participantType());
-        updateBonusItems(program, request.bonusEnabled(), request.maxBonus(), request.bonusItems());
-        if (program.getStatus() != Status.DRAFT) {
-            requirePublishDates(ProgramTimes.applicationDeadline(program), ProgramTimes.evaluationDeadline(program));
-        }
+        updateBonusItems(program, request.bonusEnabled(), null, request.bonusItems());
         Program saved = programRepository.save(program);
-        applyAutoStatus(saved); // 지원 기간이 지정되어 있으면 접수중/평가중으로 즉시 반영
-        return ProgramResponse.from(saved);
+
+        saveCriteria(saved, request.criteria());
+        saveFormFields(saved, request.formFields());
+        if (request.publish()) publish(saved);
+        entityManager.flush();
+        return editorResponse(saved);
     }
+
+    // 기존 프로그램을 화면의 전체 상태로 저장한다. 임시저장 이어쓰기·수정·임시저장 후 개설이 모두 이 경로를 쓴다.
+    // 동시 수정은 막지 않는다. 나중에 저장한 쪽이 이긴다.
+    @Transactional
+    public ProgramEditorResponse updateProgram(Long programId, SaveProgramRequest request) {
+        validateProgramBasics(request, false);
+        Program program = programRepository.findById(programId)
+                .orElseThrow(() -> notFound("Program not found."));
+
+        entityManager.refresh(program, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+
+        if (request.publish() && program.getStatus() != Status.DRAFT) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "임시저장 프로그램만 개설할 수 있습니다.");
+        }
+
+        // 일정 값이 null이면 기존 값을 유지한다. (저장된 일정은 화면에서 비울 수 없다)
+        Instant applicationStart = ProgramTimes.resolve(request.applicationStartAt(), null, null, ProgramTimes.applicationStart(program), false);
+        Instant applicationDeadline = ProgramTimes.resolve(request.applicationDeadlineAt(), null, null, ProgramTimes.applicationDeadline(program), true);
+        Instant evaluationStart = ProgramTimes.resolve(request.evaluationStartAt(), null, null, ProgramTimes.evaluationStart(program), false);
+        Instant evaluationDeadline = ProgramTimes.resolve(request.evaluationDeadlineAt(), null, null, ProgramTimes.evaluationDeadline(program), true);
+        boolean scheduleChanged = !Objects.equals(ProgramTimes.applicationStart(program), applicationStart)
+                || !Objects.equals(ProgramTimes.applicationDeadline(program), applicationDeadline)
+                || !Objects.equals(ProgramTimes.evaluationStart(program), evaluationStart)
+                || !Objects.equals(ProgramTimes.evaluationDeadline(program), evaluationDeadline);
+        if (scheduleChanged) validateProgramDates(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
+
+        boolean applicationDeadlineChanged = !Objects.equals(ProgramTimes.applicationDeadline(program), applicationDeadline);
+        if (applicationDeadlineChanged && !APPLICATION_DEADLINE_EDITABLE.contains(program.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "평가가 시작된 뒤에는 지원 마감일을 변경할 수 없습니다.");
+        }
+
+        // 평가 마감일이 실제로 바뀐 경우에만 완료(INACTIVE) 상태를 다시 연다.
+        // 제목만 고쳤는데 매니저가 수동으로 종료한 프로그램이 되살아나면 안 되기 때문이다.
+        boolean evaluationDeadlineChanged = !Objects.equals(ProgramTimes.evaluationDeadline(program), evaluationDeadline);
+
+        // 담당 매니저는 생성 시에만 정한다. 수정하는 사람으로 바뀌지 않는다.
+        program.update(request.title().trim(), request.description(), request.type(), null,
+                null, null, null, null, request.eligibilityCriteria());
+        program.updateSchedule(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
+        program.updateAttachmentSettings(request.attachmentsEnabled(), request.maxAttachments());
+        program.updateParticipantType(request.participantType());
+        updateBonusItems(program, request.bonusEnabled(), null, request.bonusItems());
+
+        saveCriteria(program, request.criteria());
+        saveFormFields(program, request.formFields());
+        if (request.publish()) {
+            publish(program);
+        } else {
+            // 기간이 바뀌면 즉시 재계산한다. 평가 마감일을 늘렸다면 INACTIVE(평가 완료)도 다시 연다.
+            applyAutoStatus(program, evaluationDeadlineChanged);
+        }
+        entityManager.flush();
+        return editorResponse(program);
+    }
+
+    private void validateProgramBasics(SaveProgramRequest request, boolean creating) {
+        if (request.title() == null || request.title().isBlank() || request.title().trim().length() > 255) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "프로그램 명을 1~255자로 입력해주세요.");
+        }
+        if (creating && request.type() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "프로그램 유형을 선택해주세요.");
+        }
+        if (request.criteria() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "평가 기준 목록(criteria)이 필요합니다. 비우려면 빈 배열을 보내주세요.");
+        }
+        if (request.formFields() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원 양식 항목 목록(formFields)이 필요합니다. 비우려면 빈 배열을 보내주세요.");
+        }
+    }
+
+    // DRAFT를 개설한다. 이후 실제 상태는 현재 시각과 기간으로 계산한다.
+    private void publish(Program program) {
+        if (program.getStatus() != Status.DRAFT) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "임시저장 프로그램만 개설할 수 있습니다.");
+        }
+        requirePublishDates(ProgramTimes.applicationDeadline(program), ProgramTimes.evaluationDeadline(program));
+        validateProgramDates(ProgramTimes.applicationStart(program), ProgramTimes.applicationDeadline(program),
+                ProgramTimes.evaluationStart(program), ProgramTimes.evaluationDeadline(program));
+        program.changeStatus(Status.ACTIVE);
+        applyAutoStatus(program);
+    }
+
+    private ProgramEditorResponse editorResponse(Program program) {
+        return new ProgramEditorResponse(
+                ProgramResponse.from(program),
+                findCriteria(program.getId()),
+                findFormFields(program.getId())
+        );
+    }
+
+    // 평가 기준을 id 기준 diff로 저장한다. 배열 순서가 displayOrder가 된다.
+    //
+    // 심사가 시작된 프로그램은 이름·설명만 고칠 수 있다. 추가·삭제·배점 변경·순서 변경은 409.
+    //
+    // evaluation_criteria에 unique(program_id, display_order)가 있고, Hibernate는 한 번의 flush에서
+    // INSERT → UPDATE → DELETE 순으로 실행한다. 그래서 삭제 → flush → 남길 행을 임시 음수 순서로 → flush
+    // → 최종 순서와 신규 추가 순으로 나눠 반영해야 제약에 걸리지 않는다.
+    private void saveCriteria(Program program, List<SaveProgramRequest.Criterion> items) {
+        List<EvaluationCriterion> current = program.getId() == null ? List.of()
+                : criterionRepository.findByProgramIdOrderByDisplayOrderAsc(program.getId());
+        Map<Long, EvaluationCriterion> existing = new LinkedHashMap<>();
+        current.forEach(criterion -> existing.put(criterion.getId(), criterion));
+
+        Set<Long> keptIds = new HashSet<>();
+        for (SaveProgramRequest.Criterion item : items) {
+            if (item == null || item.name() == null || item.name().isBlank() || item.name().trim().length() > 255) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "평가 기준 이름을 1~255자로 입력해주세요.");
+            }
+            validateCriterionMaxScore(item.maxScore());
+            if (item.id() == null) continue;
+            if (!existing.containsKey(item.id())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "평가 기준 " + item.id() + "은(는) 이 프로그램에 속하지 않습니다.");
+            }
+            if (!keptIds.add(item.id())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 평가 기준이 두 번 포함되었습니다: " + item.id());
+            }
+        }
+
+        if (program.isEvaluationStarted()) {
+            List<Long> requestedOrder = items.stream().map(SaveProgramRequest.Criterion::id).toList();
+            boolean structureChanged = requestedOrder.contains(null)
+                    || !requestedOrder.equals(new ArrayList<>(existing.keySet()));
+            boolean maxChanged = items.stream().anyMatch(item -> item.id() != null
+                    && item.maxScore().compareTo(existing.get(item.id()).getMaxScore()) != 0);
+            if (structureChanged || maxChanged) throw criteriaLocked();
+            // 순서는 그대로 두고 이름·설명만 반영한다.
+            for (SaveProgramRequest.Criterion item : items) {
+                EvaluationCriterion criterion = existing.get(item.id());
+                criterion.update(item.name().trim(), blankToNull(item.description()), criterion.getWeight(), criterion.getDisplayOrder());
+            }
+            return;
+        }
+
+        List<EvaluationCriterion> toDelete = existing.values().stream()
+                .filter(criterion -> !keptIds.contains(criterion.getId()))
+                .toList();
+        if (!toDelete.isEmpty()) {
+            criterionRepository.deleteAll(toDelete);
+            entityManager.flush();
+        }
+
+        // 남길 행을 서로 겹치지 않는 임시 음수 순서로 옮긴다.
+        int temp = -1;
+        for (SaveProgramRequest.Criterion item : items) {
+            if (item.id() == null) continue;
+            EvaluationCriterion criterion = existing.get(item.id());
+            criterion.update(criterion.getName(), criterion.getDescription(), criterion.getWeight(), temp--);
+        }
+        entityManager.flush();
+
+        for (int i = 0; i < items.size(); i++) {
+            SaveProgramRequest.Criterion item = items.get(i);
+            String description = blankToNull(item.description());
+            if (item.id() == null) {
+                EvaluationCriterion criterion = new EvaluationCriterion(program, item.name().trim(), description, BigDecimal.ONE, i + 1);
+                criterion.updateMaxScore(item.maxScore());
+                criterionRepository.save(criterion);
+            } else {
+                EvaluationCriterion criterion = existing.get(item.id());
+                criterion.update(item.name().trim(), description, criterion.getWeight(), i + 1);
+                criterion.updateMaxScore(item.maxScore());
+            }
+        }
+        entityManager.flush();
+    }
+
+    private static final Set<String> FORM_FIELD_TYPES = Set.of("SHORT_TEXT", "LONG_TEXT", "RADIO", "CHECKBOX");
+    private static final Set<String> OPTION_FIELD_TYPES = Set.of("RADIO", "CHECKBOX");
+
+    // 지원 양식 항목을 id 기준 diff로 저장한다. 배열 순서가 displayOrder가 된다.
+    //
+    // 항목을 통째로 지우고 다시 만들면 application_answers의 on delete cascade 때문에
+    // 지원자가 이미 제출한 답변이 함께 사라진다. 따라서 id를 기준으로 차이만 반영한다.
+    //   - id가 있는 항목: 기존 행을 제자리에서 수정한다 (id 유지 → 답변 보존)
+    //   - id가 null인 항목: 새로 추가한다
+    //   - 요청에 없는 기존 항목: 삭제한다. 단 답변이 달려 있으면 409로 막는다 (트랜잭션 전체가 롤백된다)
+    private void saveFormFields(Program program, List<SaveProgramRequest.FormField> items) {
+        Map<Long, ApplicationFormField> existing = new LinkedHashMap<>();
+        for (ApplicationFormField field : formFieldRepository.findByProgramIdOrderByDisplayOrderAsc(program.getId())) {
+            existing.put(field.getId(), field);
+        }
+
+        // 남겨둘 항목을 먼저 가려낸다. 나머지가 삭제 대상이다.
+        Set<Long> keptIds = new HashSet<>();
+        for (SaveProgramRequest.FormField item : items) {
+            if (item == null || item.label() == null || item.label().isBlank() || item.label().trim().length() > 255) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원 양식 항목 이름을 1~255자로 입력해주세요.");
+            }
+            if (item.fieldType() == null || !FORM_FIELD_TYPES.contains(item.fieldType())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원 양식 항목 유형이 올바르지 않습니다: " + item.label().trim());
+            }
+            if (OPTION_FIELD_TYPES.contains(item.fieldType()) && joinOptions(item.options()) == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "선택지 유형 항목에 선택지를 최소 1개 입력해주세요: " + item.label().trim());
+            }
+            if (item.id() == null) continue;
+            if (!existing.containsKey(item.id())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "지원 양식 항목 " + item.id() + "은(는) 이 프로그램에 속하지 않습니다.");
+            }
+            if (!keptIds.add(item.id())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 지원 양식 항목이 두 번 포함되었습니다: " + item.id());
+            }
+        }
+
+        List<ApplicationFormField> toDelete = existing.values().stream()
+                .filter(field -> !keptIds.contains(field.getId()))
+                .toList();
+
+        guardAnsweredFieldsNotDeleted(toDelete);
+
+        // 화면 순서(i + 1)를 displayOrder로 다시 매긴다.
+        List<ApplicationFormField> toSave = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            SaveProgramRequest.FormField item = items.get(i);
+            String options = OPTION_FIELD_TYPES.contains(item.fieldType()) ? joinOptions(item.options()) : null;
+            if (item.id() == null) {
+                toSave.add(new ApplicationFormField(
+                        program, item.label().trim(), item.fieldType(), item.required(), i + 1, options
+                ));
+            } else {
+                ApplicationFormField field = existing.get(item.id());
+                field.update(item.label().trim(), item.fieldType(), item.required(), i + 1, options);
+                toSave.add(field);
+            }
+        }
+
+        if (!toDelete.isEmpty()) {
+            formFieldRepository.deleteAll(toDelete);
+        }
+        formFieldRepository.saveAll(toSave);
+        entityManager.flush();
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
 
     // 지원자에게 노출할 프로그램 목록: 접수 중(RECRUITING) + 접수 예정(SCHEDULED).
     // 실제 지원 가능 여부는 상태로 구분하며, 지원 시작 전(SCHEDULED)에는 프론트에서 '접수 예정'으로 표시한다.
@@ -177,51 +416,6 @@ public class ProgramManagementService {
             Status.DRAFT, Status.SCHEDULED, Status.RECRUITING, Status.PENDING_EVALUATION
     );
 
-    // 프로그램 기본 정보(제목, 설명, 유형, 담당자)를 수정한다.
-    @Transactional
-    public ProgramResponse updateProgram(Long programId, UpdateProgramRequest request) {
-        Program program = programRepository.findById(programId)
-                .orElseThrow(() -> notFound("Program not found."));
-
-        entityManager.refresh(program, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
-
-        User manager = request.managerId() == null ? null : userRepository.findById(request.managerId())
-                .orElseThrow(() -> notFound("Manager not found."));
-
-        Instant applicationStart = ProgramTimes.resolve(request.applicationStartAt(), request.applicationStart(),
-                program.getApplicationStart(), ProgramTimes.applicationStart(program), false);
-        Instant applicationDeadline = ProgramTimes.resolve(request.applicationDeadlineAt(), request.applicationDeadline(),
-                program.getApplicationDeadline(), ProgramTimes.applicationDeadline(program), true);
-        Instant evaluationStart = ProgramTimes.resolve(request.evaluationStartAt(), request.evaluationStart(),
-                program.getEvaluationStart(), ProgramTimes.evaluationStart(program), false);
-        Instant evaluationDeadline = ProgramTimes.resolve(request.evaluationDeadlineAt(), request.evaluationDeadline(),
-                program.getEvaluationDeadline(), ProgramTimes.evaluationDeadline(program), true);
-        boolean scheduleChanged = !Objects.equals(ProgramTimes.applicationStart(program), applicationStart)
-                || !Objects.equals(ProgramTimes.applicationDeadline(program), applicationDeadline)
-                || !Objects.equals(ProgramTimes.evaluationStart(program), evaluationStart)
-                || !Objects.equals(ProgramTimes.evaluationDeadline(program), evaluationDeadline);
-        if (scheduleChanged) validateProgramDates(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
-
-        boolean applicationDeadlineChanged = !Objects.equals(ProgramTimes.applicationDeadline(program), applicationDeadline);
-        if (applicationDeadlineChanged && !APPLICATION_DEADLINE_EDITABLE.contains(program.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Application deadline cannot be changed once the evaluation period has started.");
-        }
-
-        // 평가 마감일이 실제로 바뀐 경우에만 완료(INACTIVE) 상태를 다시 연다.
-        // 제목만 고쳤는데 매니저가 수동으로 종료한 프로그램이 되살아나면 안 되기 때문이다.
-        boolean evaluationDeadlineChanged = !Objects.equals(ProgramTimes.evaluationDeadline(program), evaluationDeadline);
-
-        program.update(request.title(), request.description(), request.type(), manager, request.applicationStart(), request.applicationDeadline(), request.evaluationStart(), request.evaluationDeadline(), request.eligibilityCriteria());
-        program.updateSchedule(applicationStart, applicationDeadline, evaluationStart, evaluationDeadline);
-        program.updateAttachmentSettings(request.attachmentsEnabled(), request.maxAttachments());
-        program.updateParticipantType(request.participantType());
-        updateBonusItems(program, request.bonusEnabled(), request.maxBonus(), request.bonusItems());
-        // 기간이 바뀌면 즉시 재계산한다. 평가 마감일을 늘렸다면 INACTIVE(평가 완료)도 다시 연다.
-        applyAutoStatus(program, evaluationDeadlineChanged);
-        entityManager.flush();
-        return ProgramResponse.from(program);
-    }
 
     // 개설(공개)되는 프로그램은 지원 마감일과 평가 마감일이 모두 있어야 한다. 임시 저장(DRAFT)은 예외.
     // 지원 마감일이 없으면 resolveAutoStatus가 null을 반환해 자동 전환이 아예 돌지 않고,
@@ -257,23 +451,6 @@ public class ProgramManagementService {
         }
     }
 
-    // 임시저장만 개설할 수 있다. 이후 상태 전환은 기간으로만 결정한다.
-    @Transactional
-    public ProgramResponse publishProgram(Long programId) {
-        Program program = programRepository.findById(programId)
-                .orElseThrow(() -> notFound("Program not found."));
-        entityManager.refresh(program, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
-        if (program.getStatus() != Status.DRAFT) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "임시저장 프로그램만 개설할 수 있습니다.");
-        }
-        requirePublishDates(ProgramTimes.applicationDeadline(program), ProgramTimes.evaluationDeadline(program));
-        validateProgramDates(ProgramTimes.applicationStart(program), ProgramTimes.applicationDeadline(program),
-                ProgramTimes.evaluationStart(program), ProgramTimes.evaluationDeadline(program));
-        program.changeStatus(Status.ACTIVE);
-        applyAutoStatus(program);
-        entityManager.flush();
-        return ProgramResponse.from(program);
-    }
 
     // Module A 개인 참가자는 participantType=INDIVIDUAL인 1인 팀으로 저장한다.
     @Transactional
@@ -507,25 +684,6 @@ public class ProgramManagementService {
         teamMemberRepository.delete(teamMember);
     }
 
-    // 항목별 배점을 실제 점수 상한으로 사용한다.
-    @Transactional
-    public CriterionResponse createCriterion(Long programId, CreateCriterionRequest request) {
-        Program program = programRepository.findById(programId)
-                .orElseThrow(() -> notFound("Program not found."));
-
-        lockCriteriaProgram(program);
-        if (program.isEvaluationStarted()) throw criteriaLocked();
-        validateCriterionMaxScore(request.maxScore());
-        EvaluationCriterion criterion = new EvaluationCriterion(
-                program,
-                request.name(),
-                request.description(),
-                BigDecimal.ONE,
-                request.displayOrder()
-        );
-        criterion.updateMaxScore(request.maxScore());
-        return CriterionResponse.from(criterionRepository.save(criterion));
-    }
 
     // 질문은 displayOrder 기준으로 정렬해 평가 화면에 표시한다.
     @Transactional(readOnly = true)
@@ -535,42 +693,8 @@ public class ProgramManagementService {
                 .toList();
     }
 
-    // 평가 질문을 수정한다.
-    @Transactional
-    public CriterionResponse updateCriterion(Long programId, Long criterionId, UpdateCriterionRequest request) {
-        EvaluationCriterion criterion = criterionRepository.findById(criterionId)
-                .orElseThrow(() -> notFound("Criterion not found."));
-        if (!criterion.getProgram().getId().equals(programId)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Criterion does not belong to this program.");
-        }
 
-        lockCriteriaProgram(criterion.getProgram());
-        validateCriterionMaxScore(request.maxScore());
-        if (criterion.getProgram().isEvaluationStarted()
-                && (request.maxScore().compareTo(criterion.getMaxScore()) != 0
-                || !java.util.Objects.equals(request.displayOrder(), criterion.getDisplayOrder()))) throw criteriaLocked();
-        criterion.update(request.name(), request.description(), criterion.getWeight(), request.displayOrder());
-        criterion.updateMaxScore(request.maxScore());
-        return CriterionResponse.from(criterion);
-    }
 
-    // 평가 질문을 삭제한다. 이미 채점된 점수가 있으면 같이 삭제되니 주의.
-    @Transactional
-    public void deleteCriterion(Long programId, Long criterionId) {
-        EvaluationCriterion criterion = criterionRepository.findById(criterionId)
-                .orElseThrow(() -> notFound("Criterion not found."));
-        if (!criterion.getProgram().getId().equals(programId)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Criterion does not belong to this program.");
-        }
-        lockCriteriaProgram(criterion.getProgram());
-        if (criterion.getProgram().isEvaluationStarted()) throw criteriaLocked();
-        criterionRepository.delete(criterion);
-    }
-
-    private void lockCriteriaProgram(Program program) {
-        entityManager.flush();
-        entityManager.refresh(program, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
-    }
 
     private ResponseStatusException criteriaLocked() {
         return new ResponseStatusException(HttpStatus.CONFLICT, "심사가 시작된 프로그램의 배점과 항목 구성은 변경할 수 없습니다.");
@@ -591,68 +715,6 @@ public class ProgramManagementService {
                 .toList();
     }
 
-    // 지원 양식 항목을 저장한다. 화면 순서를 displayOrder로 저장한다.
-    //
-    // 항목을 통째로 지우고 다시 만들면 application_answers의 on delete cascade 때문에
-    // 지원자가 이미 제출한 답변이 함께 사라진다. 따라서 id를 기준으로 차이만 반영한다.
-    //   - id가 있는 항목: 기존 행을 제자리에서 수정한다 (id 유지 → 답변 보존)
-    //   - id가 null인 항목: 새로 추가한다
-    //   - 요청에 없는 기존 항목: 삭제한다. 단 답변이 달려 있으면 409로 막는다
-    @Transactional
-    public List<FormFieldResponse> replaceFormFields(Long programId, ReplaceFormFieldsRequest request) {
-        Program program = programRepository.findById(programId)
-                .orElseThrow(() -> notFound("Program not found."));
-
-        Map<Long, ApplicationFormField> existing = new LinkedHashMap<>();
-        for (ApplicationFormField field : formFieldRepository.findByProgramIdOrderByDisplayOrderAsc(programId)) {
-            existing.put(field.getId(), field);
-        }
-
-        List<ReplaceFormFieldsRequest.Item> items = request.fields() == null ? List.of() : request.fields();
-
-        // 남겨둘 항목을 먼저 가려낸다. 나머지가 삭제 대상이다.
-        Set<Long> keptIds = new HashSet<>();
-        for (ReplaceFormFieldsRequest.Item item : items) {
-            if (item.id() == null) continue;
-            if (!existing.containsKey(item.id())) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Form field " + item.id() + " does not belong to this program.");
-            }
-            if (!keptIds.add(item.id())) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Duplicate form field id in request: " + item.id());
-            }
-        }
-
-        List<ApplicationFormField> toDelete = existing.values().stream()
-                .filter(field -> !keptIds.contains(field.getId()))
-                .toList();
-
-        guardAnsweredFieldsNotDeleted(toDelete);
-
-        // 화면 순서(i + 1)를 displayOrder로 다시 매긴다.
-        List<ApplicationFormField> toSave = new ArrayList<>();
-        for (int i = 0; i < items.size(); i++) {
-            ReplaceFormFieldsRequest.Item item = items.get(i);
-            String options = joinOptions(item.options());
-            if (item.id() == null) {
-                toSave.add(new ApplicationFormField(
-                        program, item.label(), item.fieldType(), item.required(), i + 1, options
-                ));
-            } else {
-                ApplicationFormField field = existing.get(item.id());
-                field.update(item.label(), item.fieldType(), item.required(), i + 1, options);
-                toSave.add(field);
-            }
-        }
-
-        if (!toDelete.isEmpty()) {
-            formFieldRepository.deleteAll(toDelete);
-        }
-        formFieldRepository.saveAll(toSave);
-
-        return findFormFields(programId);
-    }
 
     // 답변이 달린 양식 항목은 삭제를 막는다. 지우면 그 항목의 모든 지원자 답변이 cascade로 사라진다.
     private void guardAnsweredFieldsNotDeleted(List<ApplicationFormField> toDelete) {

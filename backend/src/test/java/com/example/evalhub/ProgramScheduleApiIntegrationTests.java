@@ -16,7 +16,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -38,7 +37,7 @@ class ProgramScheduleApiIntegrationTests {
     @Autowired EntityManager entityManager;
 
     private static final String PRECISE = """
-        {"title":"schedule-api","type":"MODULE_A","status":"ACTIVE",
+        {"title":"schedule-api","type":"MODULE_A","publish":true,"criteria":[],"formFields":[],
          "applicationStartAt":"2030-11-10T09:00:00+09:00",
          "applicationDeadlineAt":"2030-11-20T18:00:00+09:00",
          "evaluationStartAt":"2030-11-20T18:00:00+09:00",
@@ -48,7 +47,7 @@ class ProgramScheduleApiIntegrationTests {
     private long create(String json) throws Exception {
         String body = mvc.perform(post("/api/programs").with(csrf()).contentType("application/json").content(json))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        return mapper.readTree(body).get("id").asLong();
+        return mapper.readTree(body).get("program").get("id").asLong();
     }
 
     @Test
@@ -95,37 +94,24 @@ class ProgramScheduleApiIntegrationTests {
     }
 
     @Test
-    void dateOnlyClientsKeepInclusiveDeadlineSemantics() throws Exception {
-        long id = create("""
-            {"title":"legacy","type":"MODULE_A","status":"ACTIVE",
-             "applicationStart":"2030-11-10","applicationDeadline":"2030-11-20",
-             "evaluationStart":"2030-11-21","evaluationDeadline":"2030-11-30"}
-            """);
-        Program p = programs.findById(id).orElseThrow();
-        assertThat(p.getApplicationDeadline()).isEqualTo(LocalDate.parse("2030-11-20"));
-        assertThat(p.getApplicationDeadlineAt()).isEqualTo(Instant.parse("2030-11-20T15:00:00Z"));
-        assertThat(p.getEvaluationDeadlineAt()).isEqualTo(Instant.parse("2030-11-30T15:00:00Z"));
-    }
-
-    @Test
-    void oldClientResendingDatesDoesNotErasePreciseTimes() throws Exception {
+    void resavingUnchangedInstantsKeepsSchedule() throws Exception {
         long id = create(PRECISE);
-        mvc.perform(post("/api/programs/" + id).with(csrf()).contentType("application/json").content("""
-            {"title":"updated","applicationStart":"2030-11-10","applicationDeadline":"2030-11-20",
-             "evaluationStart":"2030-11-20","evaluationDeadline":"2030-11-30"}
-            """))
+        mvc.perform(put("/api/programs/" + id).with(csrf()).contentType("application/json")
+                        .content(PRECISE.replace("\"schedule-api\"", "\"updated\"").replace("\"publish\":true", "\"publish\":false")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.schedule.applicationDeadlineAt").value("2030-11-20T18:00:00+09:00"));
+                .andExpect(jsonPath("$.program.title").value("updated"))
+                .andExpect(jsonPath("$.program.schedule.applicationDeadlineAt").value("2030-11-20T18:00:00+09:00"));
     }
 
     @Test
     void partialTimeUpdateKeepsAllOtherInstants() throws Exception {
         long id = create(PRECISE);
-        mvc.perform(post("/api/programs/" + id).with(csrf()).contentType("application/json")
-                        .content("{\"evaluationDeadlineAt\":\"2030-12-01T12:30:00+09:00\"}"))
+        mvc.perform(put("/api/programs/" + id).with(csrf()).contentType("application/json")
+                        .content("{\"title\":\"schedule-api\",\"criteria\":[],\"formFields\":[],"
+                                + "\"evaluationDeadlineAt\":\"2030-12-01T12:30:00+09:00\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.schedule.applicationStartAt").value("2030-11-10T09:00:00+09:00"))
-                .andExpect(jsonPath("$.schedule.evaluationDeadlineAt").value("2030-12-01T12:30:00+09:00"));
+                .andExpect(jsonPath("$.program.schedule.applicationStartAt").value("2030-11-10T09:00:00+09:00"))
+                .andExpect(jsonPath("$.program.schedule.evaluationDeadlineAt").value("2030-12-01T12:30:00+09:00"));
     }
 
     @Test

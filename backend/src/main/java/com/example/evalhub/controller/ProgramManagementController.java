@@ -1,6 +1,8 @@
 package com.example.evalhub.controller;
 
 import com.example.evalhub.dto.*;
+import com.example.evalhub.entity.Role;
+import com.example.evalhub.security.AuthenticatedUser;
 import com.example.evalhub.service.ApplicationService;
 import com.example.evalhub.service.AccountDeletionService;
 import com.example.evalhub.service.EvaluationService;
@@ -9,6 +11,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
 import java.util.List;
 
@@ -47,11 +50,16 @@ public class ProgramManagementController {
         return applicationService.updateApplicationByTeam(teamId, request);
     }
 
-    // 프로그램 매니저가 Module A/B 평가 프로그램을 생성한다.
-    @Operation(summary = "프로그램 등록", description = "status는 DRAFT(임시저장) 또는 ACTIVE(개설, 생략 가능)만 허용하며 실제 상태는 기간으로 계산합니다. 기간은 applicationStartAt/applicationDeadlineAt/evaluationStartAt/evaluationDeadlineAt에 시간대가 포함된 ISO-8601 시각으로 보냅니다. 기존 날짜 필드도 호환됩니다. 시각 필드가 우선하며 마감 시각부터 차단됩니다.")
+    // 프로그램 편집 화면의 전체 상태(기본 정보·평가 기준·지원 양식 항목)를 한 트랜잭션으로 생성한다.
+    // 담당 매니저는 본문이 아니라 로그인 정보로 정한다. MANAGER가 만들면 본인, SUPER_ADMIN이면 비워 둔다.
+    @Operation(summary = "프로그램 생성", description = "기본 정보, 평가 기준(criteria), 지원 양식 항목(formFields)을 한 번에 저장합니다. 하나라도 실패하면 전부 롤백됩니다. publish=true면 같은 트랜잭션에서 개설하며, 실제 상태는 기간으로 계산합니다. criteria/formFields는 배열 순서가 표시 순서이며 필수입니다(비우려면 빈 배열).")
     @PostMapping("/programs")
-    public ProgramResponse createProgram(@RequestBody CreateProgramRequest request) {
-        return programManagementService.createProgram(request);
+    public ProgramEditorResponse createProgram(
+            @RequestBody SaveProgramRequest request,
+            @AuthenticationPrincipal AuthenticatedUser user
+    ) {
+        Long managerId = user != null && user.role() == Role.MANAGER ? user.id() : null;
+        return programManagementService.createProgram(request, managerId);
     }
 
     // 관리자 화면에서 등록된 프로그램 목록을 조회한다.
@@ -69,10 +77,10 @@ public class ProgramManagementController {
         return programManagementService.findOpenPrograms();
     }
 
-    // 프로그램 기본 정보를 수정한다. null 필드는 변경하지 않는다.
-    @Operation(summary = "프로그램 수정", description = "보낸 필드만 수정합니다. null은 기존 값을 유지합니다. 기간의 *At 필드는 오프셋이 포함된 ISO-8601 시각입니다. 기존 날짜만 보내는 경우 변경되지 않은 날짜의 정확한 시각은 유지합니다.")
-    @PostMapping("/programs/{programId}")
-    public ProgramResponse updateProgram(@PathVariable Long programId, @RequestBody UpdateProgramRequest request) {
+    // 기존 프로그램을 화면의 전체 상태로 저장한다. (임시저장 이어쓰기, 수정, 임시저장 후 개설)
+    @Operation(summary = "프로그램 저장", description = "기본 정보, 평가 기준, 지원 양식 항목을 한 트랜잭션으로 저장합니다. 항목은 id가 있으면 제자리 수정, null이면 추가, 요청에 없으면 삭제합니다. 답변이 달린 양식 항목 삭제, 심사 시작 후 평가 기준 구성·배점 변경은 409입니다. publish=true는 DRAFT에서만 허용합니다. 일정 *At 필드가 null이면 기존 값을 유지합니다.")
+    @PutMapping("/programs/{programId}")
+    public ProgramEditorResponse updateProgram(@PathVariable Long programId, @RequestBody SaveProgramRequest request) {
         return programManagementService.updateProgram(programId, request);
     }
 
@@ -80,12 +88,6 @@ public class ProgramManagementController {
     @DeleteMapping("/programs/{programId}")
     public void deleteProgram(@PathVariable Long programId) {
         programManagementService.deleteProgram(programId);
-    }
-
-    @Operation(summary = "임시저장 프로그램 개설", description = "DRAFT 프로그램을 개설합니다. 개설 후 상태는 현재 시각과 지원·평가 기간에 따라 결정됩니다.")
-    @PostMapping("/programs/{programId}/publish")
-    public ProgramResponse publishProgram(@PathVariable Long programId) {
-        return programManagementService.publishProgram(programId);
     }
 
     // 프로그램에 평가 대상 팀을 등록한다. 개인 참가자도 1인 팀으로 등록한다.
@@ -171,36 +173,11 @@ public class ProgramManagementController {
         programManagementService.removeTeamMember(teamId, memberId);
     }
 
-    // 평가 질문을 등록한다. 각 질문의 배점이 점수 상한이다.
-    @Operation(summary = "평가 질문 등록", description = "항목별 배점을 설정할 평가 질문을 등록합니다.")
-    @PostMapping("/programs/{programId}/criteria")
-    public CriterionResponse createCriterion(@PathVariable Long programId, @RequestBody CreateCriterionRequest request) {
-        return programManagementService.createCriterion(programId, request);
-    }
-
     // 프로그램 평가 화면에 표시할 질문 목록을 순서대로 조회한다.
     @Operation(summary = "평가 질문 목록 조회")
     @GetMapping("/programs/{programId}/criteria")
     public List<CriterionResponse> findCriteria(@PathVariable Long programId) {
         return programManagementService.findCriteria(programId);
-    }
-
-    // 평가 질문을 수정한다.
-    @Operation(summary = "평가 질문 수정")
-    @PutMapping("/programs/{programId}/criteria/{criterionId}")
-    public CriterionResponse updateCriterion(
-            @PathVariable Long programId,
-            @PathVariable Long criterionId,
-            @RequestBody UpdateCriterionRequest request
-    ) {
-        return programManagementService.updateCriterion(programId, criterionId, request);
-    }
-
-    // 평가 질문을 삭제한다.
-    @Operation(summary = "평가 질문 삭제")
-    @DeleteMapping("/programs/{programId}/criteria/{criterionId}")
-    public void deleteCriterion(@PathVariable Long programId, @PathVariable Long criterionId) {
-        programManagementService.deleteCriterion(programId, criterionId);
     }
 
     // 프로그램 제출 항목을 순서대로 조회한다.
@@ -209,16 +186,6 @@ public class ProgramManagementController {
     @PreAuthorize("permitAll()")
     public List<FormFieldResponse> findFormFields(@PathVariable Long programId) {
         return programManagementService.findFormFields(programId);
-    }
-
-    // 제출 항목 전체를 교체한다. (임시 저장/개설 시 화면의 전체 목록을 그대로 전송)
-    @Operation(summary = "제출 항목 교체", description = "제출 항목 전체를 전송된 목록으로 교체합니다. 순서는 배열 순서를 따릅니다.")
-    @PutMapping("/programs/{programId}/form-fields")
-    public List<FormFieldResponse> replaceFormFields(
-            @PathVariable Long programId,
-            @RequestBody ReplaceFormFieldsRequest request
-    ) {
-        return programManagementService.replaceFormFields(programId, request);
     }
 
     @Operation(summary = "유저 등록", description = "심사위원은 POST /api/evaluators로 생성합니다. 그 외 기존 계정을 등록합니다.")
