@@ -39,7 +39,11 @@ export default function EvaluationPage() {
   const startedLogoutRef = useRef(null);
   const queryClient = useQueryClient();
   const hydratedViewRef = useRef(null);
-  const observedSubmissionStatusRef = useRef(null);
+  // 지금 서버로 나가 있는 저장 요청('draft' | 'submit' | null).
+  // mutation의 isPending은 다음 렌더에야 반영되므로, 자동 임시저장 직후 제출을 누르면 두 요청이
+  // 함께 나갈 수 있다. 제출이 먼저 처리되면 뒤따른 임시저장이 409(이미 최종 제출됨)를 받는다.
+  // ref는 즉시 바뀌므로 한 화면에서 임시저장과 제출이 겹치지 않게 막는 데 쓴다.
+  const inFlightRef = useRef(null);
   const [scores, setScores] = useState({});
   const [comment, setComment] = useState('');
   const [leftTab, setLeftTab] = useState(0);
@@ -140,7 +144,6 @@ export default function EvaluationPage() {
     const hydrationKey = `${assignmentId}:${teamId}`;
     if (!view || hydratedViewRef.current === hydrationKey) return;
     hydratedViewRef.current = hydrationKey;
-    observedSubmissionStatusRef.current = view.submission?.status ?? 'DRAFT';
     const loadedScores = {};
     let loadedComment = '';
     if (view.submission?.scores) {
@@ -156,19 +159,6 @@ export default function EvaluationPage() {
     setMessage('');
     setLeftTab(0);
   }, [assignmentId, teamId, view]);
-
-  // 실시간 갱신이 오래된 탭의 임시저장보다 먼저 도착해도 최신 내용 확인을 강제한다.
-  useEffect(() => {
-    if (!view || hydratedViewRef.current !== `${assignmentId}:${teamId}`) return;
-    const previous = observedSubmissionStatusRef.current;
-    const latest = view.submission?.status ?? 'DRAFT';
-    observedSubmissionStatusRef.current = latest;
-    if (previous !== 'SUBMITTED' && latest === 'SUBMITTED' && !submitting) {
-      clearTimeout(autosaveTimerRef.current);
-      setSubmissionConflict(true);
-      setReloadError('');
-    }
-  }, [assignmentId, teamId, view, submitting]);
 
   // 저장하지 않은 변경사항이 있는 채로 창을 닫으려 하면 경고한다.
   useEffect(() => {
@@ -190,10 +180,11 @@ export default function EvaluationPage() {
   });
 
   const persistDraft = async ({ silent = false } = {}) => {
-    if (saving || submitting || !view || isSubmitted || submissionConflict) return;
+    if (inFlightRef.current || saving || submitting || !view || isSubmitted || submissionConflict) return;
     const blocked = periodMessage();
     if (blocked) { setMessage(blocked); return; }
     if (!silent) setMessage('');
+    inFlightRef.current = 'draft';
     try {
       await draftMutation.mutateAsync(buildRequest());
       setSavedSnapshot(snapshotOf(scores, comment));
@@ -209,7 +200,7 @@ export default function EvaluationPage() {
       setMessage(`저장 실패: ${err.response?.data?.message || '입력한 내용은 화면에 유지됩니다.'}`);
       void viewQuery.refetch();
     } finally {
-      // pending state is managed by the mutation.
+      inFlightRef.current = null;
     }
   };
 
@@ -225,11 +216,12 @@ export default function EvaluationPage() {
 
   const handleSubmit = async () => {
     clearTimeout(autosaveTimerRef.current);
-    if (saving || submitting || !view || submissionConflict) return;
+    if (inFlightRef.current || saving || submitting || !view || submissionConflict) return;
     const blocked = periodMessage();
     if (blocked) { setMessage(blocked); return; }
     const isSubmittedEdit = isSubmitted && isEditingSubmitted;
     setMessage('');
+    inFlightRef.current = 'submit';
     try {
       const res = await submitMutation.mutateAsync(buildRequest());
       queryClient.setQueryData(queryKeys.evaluationView(assignmentId, teamId), (current) => ({
@@ -244,7 +236,7 @@ export default function EvaluationPage() {
       setMessage(`제출 실패: ${err.response?.data?.message || '입력한 내용은 화면에 유지됩니다.'}`);
       void viewQuery.refetch();
     } finally {
-      // pending state is managed by the mutation.
+      inFlightRef.current = null;
     }
   };
 
