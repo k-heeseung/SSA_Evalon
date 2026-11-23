@@ -179,6 +179,20 @@ export default function EvaluationPage() {
     oneLineComment: comment || null,
   });
 
+  // 저장 성공 응답(submission)으로 팀 목록 캐시의 이 팀 행을 바로 고친다.
+  // 전역 mutation 성공 처리는 화면에 떠 있는(active) 쿼리만 갱신하므로, 닫혀 있는 팀 목록·대시보드 캐시는
+  // 여기서 직접 맞추지 않으면 목록으로 돌아갔을 때 제출 전 상태·점수가 보인다.
+  // 고친 뒤 stale로 표시해서(refetchType: 'none') 다음에 화면이 열릴 때 서버 값으로 한 번 더 맞춘다.
+  const syncTeamLists = (submission) => {
+    queryClient.setQueryData(queryKeys.assignmentTeams(assignmentId), (current) => current?.map((team) => (
+      team.teamId === Number(teamId)
+        ? { ...team, submissionStatus: submission.status, totalScore: submission.totalScore, oneLineComment: submission.oneLineComment }
+        : team
+    )));
+    void queryClient.invalidateQueries({ queryKey: queryKeys.assignmentTeams(assignmentId), refetchType: 'none' });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.evaluatorAssignments, refetchType: 'none' });
+  };
+
   const persistDraft = async ({ silent = false } = {}) => {
     if (inFlightRef.current || saving || submitting || !view || isSubmitted || submissionConflict) return;
     const blocked = periodMessage();
@@ -186,7 +200,8 @@ export default function EvaluationPage() {
     if (!silent) setMessage('');
     inFlightRef.current = 'draft';
     try {
-      await draftMutation.mutateAsync(buildRequest());
+      const res = await draftMutation.mutateAsync(buildRequest());
+      syncTeamLists(res.data);
       setSavedSnapshot(snapshotOf(scores, comment));
       setLastSavedAt(new Date());
       if (!silent) setMessage('임시저장 되었습니다.');
@@ -228,6 +243,7 @@ export default function EvaluationPage() {
         ...current,
         submission: res.data,
       }), { updatedAt: viewQuery.dataUpdatedAt });
+      syncTeamLists(res.data);
       setSavedSnapshot(snapshotOf(scores, comment));
       setLastSavedAt(new Date());
       setIsEditingSubmitted(false);
