@@ -54,17 +54,17 @@ class EvaluatorInvitationIntegrationTests {
         String password = secrets.decrypt(encrypted(), id);
         assertThat(passwords.matches(password, users.findById(id).orElseThrow().getPassword())).isTrue();
         assertThat(service.get(id).status()).isEqualTo("PENDING");
-        when(sender.send(anyString(), anyString())).thenReturn("gmail-id");
+        when(sender.send(anyString(), anyString(), any())).thenReturn("gmail-id");
         service.tick();
         assertThat(service.get(id).status()).isEqualTo("SENT");
         assertThat(encrypted()).isNotNull();
-        verify(sender).send(users.findById(id).orElseThrow().getEmail(), password);
+        verify(sender).send(users.findById(id).orElseThrow().getEmail(), password, com.example.evalhub.entity.Role.EVALUATOR);
         changePassword(password);
         assertThat(encrypted()).isNull();
         assertThat(service.get(id).status()).isEqualTo("SENT");
     }
     @Test void transientErrorsRetryToLimitAndManualRetryRequiresCooldown() {
-        when(sender.send(anyString(), anyString())).thenThrow(new InvitationSender.DeliveryException("GMAIL_UNAVAILABLE",true));
+        when(sender.send(anyString(), anyString(), any())).thenThrow(new InvitationSender.DeliveryException("GMAIL_UNAVAILABLE",true));
         service.tick();
         assertThat(service.get(id).status()).isEqualTo("RETRY_WAIT");
         due(); service.tick();
@@ -105,7 +105,7 @@ class EvaluatorInvitationIntegrationTests {
             update evaluator_invitations set status='PROCESSING', claim_token='old',
                 locked_until=current_timestamp - interval '1 second', attempt_count=1 where user_id=?
             """,id);
-        when(sender.send(anyString(),anyString())).thenReturn("recovered");
+        when(sender.send(anyString(),anyString(),any())).thenReturn("recovered");
         var restarted = new EvaluatorInvitationService(jdbc,users,passwords,secrets,settings,sender,
                 transactionManager);
         restarted.tick();
@@ -113,11 +113,11 @@ class EvaluatorInvitationIntegrationTests {
         assertThat(service.get(id).attemptCount()).isEqualTo(2);
     }
     @Test void revokedTokenFailsWithoutAutomaticRetry() {
-        when(sender.send(anyString(),anyString())).thenThrow(new InvitationSender.DeliveryException("AUTH_REQUIRED",false));
+        when(sender.send(anyString(),anyString(),any())).thenThrow(new InvitationSender.DeliveryException("AUTH_REQUIRED",false));
         service.tick(); service.tick();
         assertThat(service.get(id).status()).isEqualTo("FAILED");
         assertThat(service.get(id).errorCode()).isEqualTo("AUTH_REQUIRED");
-        verify(sender,times(1)).send(anyString(),anyString());
+        verify(sender,times(1)).send(anyString(),anyString(),any());
     }
     @Test @WithMockUser(roles="MANAGER") void managerCanCreateAndReadButNoPasswordIsExposed() throws Exception {
         mvc.perform(post("/api/evaluators").with(csrf()).contentType("application/json")
@@ -147,7 +147,7 @@ class EvaluatorInvitationIntegrationTests {
         var restarted = new EvaluatorInvitationService(jdbc,users,passwords,secrets,settings,sender,transactionManager);
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        when(sender.send(anyString(),anyString())).thenAnswer(call -> {
+        when(sender.send(anyString(),anyString(),any())).thenAnswer(call -> {
             entered.countDown();
             if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("Dispatch not released");
             return "concurrent-mail";
@@ -162,7 +162,7 @@ class EvaluatorInvitationIntegrationTests {
             first.get(10, java.util.concurrent.TimeUnit.SECONDS);
         }
         assertThat(service.get(id).status()).isEqualTo("SENT");
-        verify(sender,times(1)).send(anyString(),anyString());
+        verify(sender,times(1)).send(anyString(),anyString(),any());
     }
     @Test @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     void rolledBackCreationLeavesNeitherAccountNorJob() {

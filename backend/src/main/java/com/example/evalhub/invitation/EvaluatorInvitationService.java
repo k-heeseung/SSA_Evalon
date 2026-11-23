@@ -48,8 +48,7 @@ public class EvaluatorInvitationService {
 
     @Transactional
     public UserResponse create(CreateEvaluatorRequest request) {
-        if (!secrets.configured()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "안내 메일 암호화 키가 설정되지 않았습니다. 로컬 서버의 EVALHUB_MAIL_ENCRYPTION_KEY를 설정해주세요.");
+        requireConfigured();
         String email = request.email() == null ? "" : request.email().trim().toLowerCase(Locale.ROOT);
         if (!InvitationSecrets.validEmail(email) || tooLong(request.name()) || tooLong(request.department()))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "올바른 이메일과 255자 이하의 이름·학과를 입력해주세요.");
@@ -58,33 +57,51 @@ public class EvaluatorInvitationService {
         try {
             User user = users.saveAndFlush(new User(email, passwords.encode(temporaryPassword), Role.EVALUATOR,
                     trim(request.name()), trim(request.department())));
-            jdbc.update("""
-                insert into evaluator_invitations(user_id, recipient_email, status, encrypted_password, expires_at)
-                values (?, ?, 'PENDING', ?, ?)
-                """, user.getId(), email, secrets.encrypt(temporaryPassword, user.getId()),
-                    Timestamp.from(Instant.now().plus(settings.retention())));
+            enqueue(user, temporaryPassword);
             return UserResponse.from(user);
         } catch (DataIntegrityViolationException e) { throw duplicate(); }
+    }
+    public void requireConfigured() {
+        if (!secrets.configured()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "안내 메일 암호화 키가 설정되지 않았습니다. 로컬 서버의 EVALHUB_MAIL_ENCRYPTION_KEY를 설정해주세요.");
+    }
+    // 계정 안내 메일을 발송 대기열에 넣는다. 계정 저장과 같은 트랜잭션에서 호출한다.
+    // 메일 문구(심사위원/매니저)는 발송 시점에 users.role로 정한다.
+    @Transactional
+    public void enqueue(User user, String temporaryPassword) {
+        requireConfigured();
+        jdbc.update("""
+            insert into evaluator_invitations(user_id, recipient_email, status, encrypted_password, expires_at)
+            values (?, ?, 'PENDING', ?, ?)
+            """, user.getId(), user.getEmail(), secrets.encrypt(temporaryPassword, user.getId()),
+                Timestamp.from(Instant.now().plus(settings.retention())));
     }
     private boolean tooLong(String value) { return value != null && value.length() > 255; }
     private String trim(String value) { return value == null || value.isBlank() ? null : value.trim(); }
     private ResponseStatusException duplicate() { return new ResponseStatusException(HttpStatus.CONFLICT, "이미 등록된 이메일입니다."); }
 
     @Transactional(readOnly = true)
-    public InvitationList list() {
+    public InvitationList list() { return list(Role.EVALUATOR); }
+    @Transactional(readOnly = true)
+    public InvitationList list(Role role) {
         return new InvitationList(settings.enabled(), secrets.configured(), jdbc.query(
-                "select i.* from evaluator_invitations i join users u on u.id = i.user_id where u.deleted_at is null order by i.user_id", this::view));
+                "select i.* from evaluator_invitations i join users u on u.id = i.user_id where u.deleted_at is null and u.role = ? order by i.user_id",
+                this::view, role.name()));
     }
     @Transactional(readOnly = true)
-    public InvitationView get(long userId) {
-        requireEvaluator(userId);
+    public InvitationView get(long userId) { return get(userId, Role.EVALUATOR); }
+    @Transactional(readOnly = true)
+    public InvitationView get(long userId, Role role) {
+        requireRole(userId, role);
         return jdbc.query("select * from evaluator_invitations where user_id = ?", this::view, userId)
                 .stream().findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "안내 메일 발송 이력이 없습니다."));
     }
     @Transactional
-    public InvitationView retry(long userId) {
+    public InvitationView retry(long userId) { return retry(userId, Role.EVALUATOR); }
+    @Transactional
+    public InvitationView retry(long userId, Role role) {
         lockUser(userId);
-        requireEvaluator(userId);
+        requireRole(userId, role);
         int changed = jdbc.update("""
             update evaluator_invitations set status = 'PENDING', next_attempt_at = current_timestamp,
                 attempt_count = 0, last_error_code = null, claim_token = null, locked_until = null
@@ -94,7 +111,7 @@ public class EvaluatorInvitationService {
             """, userId);
         if (changed == 0) throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "실패한 메일만 재시도할 수 있습니다. 비밀번호 변경·보관 기한 종료 여부를 확인하고 최근 시도 후 1분 뒤 다시 요청해주세요.");
-        return get(userId);
+        return get(userId, role);
     }
     // Called within the password-change transaction, after locking the user row.
     @Transactional
@@ -106,9 +123,9 @@ public class EvaluatorInvitationService {
             where user_id = ? and encrypted_password is not null
             """, userId);
     }
-    private void requireEvaluator(long id) {
-        if (jdbc.queryForObject("select count(*) from users where id = ? and role = 'EVALUATOR' and deleted_at is null", Long.class, id) != 1)
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "심사위원을 찾을 수 없습니다.");
+    private void requireRole(long id, Role role) {
+        if (jdbc.queryForObject("select count(*) from users where id = ? and role = ? and deleted_at is null", Long.class, id, role.name()) != 1)
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, role == Role.MANAGER ? "매니저를 찾을 수 없습니다." : "심사위원을 찾을 수 없습니다.");
     }
     private boolean lockUser(long id) {
         return !jdbc.queryForList("select id from users where id = ? for update", Long.class, id).isEmpty();
@@ -185,12 +202,13 @@ public class EvaluatorInvitationService {
             return;
         }
         try {
-            String accountStatus = jdbc.queryForObject("select status from users where id = ?", String.class, job.userId());
-            if (!"ACTIVE".equals(accountStatus)) throw new InvitationSender.DeliveryException("ACCOUNT_INACTIVE", false);
+            var account = jdbc.queryForMap("select status, role from users where id = ?", job.userId());
+            if (!"ACTIVE".equals(account.get("status"))) throw new InvitationSender.DeliveryException("ACCOUNT_INACTIVE", false);
+            Role role = Role.valueOf((String) account.get("role"));
             String password;
             try { password = secrets.decrypt(job.encryptedPassword(), job.userId()); }
             catch (IllegalStateException e) { throw new InvitationSender.DeliveryException("DECRYPTION_FAILED", false); }
-            String messageId = sender.send(job.email(), password);
+            String messageId = sender.send(job.email(), password, role);
             jdbc.update("""
                 update evaluator_invitations set status = 'SENT', gmail_message_id = ?, sent_at = current_timestamp,
                     last_error_code = null, locked_until = null, claim_token = null where user_id = ?

@@ -22,12 +22,21 @@ class GmailInvitationSenderTests {
     }
     @Test void messageContainsExactKoreanTemplateAndBase64UrlMime() {
         String mime = new String(Base64.getUrlDecoder().decode(GmailInvitationSender.encodeMessage(
-                "sender@example.com", "judge@example.com", "random-password", "http://localhost:3000/login")), StandardCharsets.UTF_8);
+                "sender@example.com", "judge@example.com", "random-password", "http://localhost:3000/login", com.example.evalhub.entity.Role.EVALUATOR)), StandardCharsets.UTF_8);
         assertThat(mime).contains("To: judge@example.com\r\n", "Content-Type: text/plain; charset=UTF-8");
         String subject = mime.substring(mime.indexOf("Subject: =?UTF-8?B?") + "Subject: =?UTF-8?B?".length()).split("\\?=")[0];
         assertThat(new String(Base64.getDecoder().decode(subject), StandardCharsets.UTF_8)).isEqualTo("[평가ON] 심사위원 계정 안내");
         String body = new String(Base64.getMimeDecoder().decode(mime.split("\r\n\r\n",2)[1]), StandardCharsets.UTF_8);
         assertThat(body).isEqualTo("심사위원 계정이 생성되었습니다.\n\n로그인 아이디: judge@example.com\n임시 비밀번호: random-password\n\n임시 비밀번호는 로그인 후 설정 화면에서 변경할 수 있습니다.\n로그인: http://localhost:3000/login\n");
+    }
+    @Test void managerMessageUsesManagerWording() {
+        String mime = new String(Base64.getUrlDecoder().decode(GmailInvitationSender.encodeMessage(
+                "sender@example.com", "manager@example.com", "random-password", "http://localhost:3000/login",
+                com.example.evalhub.entity.Role.MANAGER)), StandardCharsets.UTF_8);
+        String subject = mime.substring(mime.indexOf("Subject: =?UTF-8?B?") + "Subject: =?UTF-8?B?".length()).split("\\?=")[0];
+        assertThat(new String(Base64.getDecoder().decode(subject), StandardCharsets.UTF_8)).isEqualTo("[평가ON] 매니저 계정 안내");
+        String body = new String(Base64.getMimeDecoder().decode(mime.split("\r\n\r\n",2)[1]), StandardCharsets.UTF_8);
+        assertThat(body).startsWith("매니저 계정이 생성되었습니다.\n\n로그인 아이디: manager@example.com\n임시 비밀번호: random-password\n");
     }
     @Test void unauthorizedResponseRefreshesTokenOnceAndSuccessfulTokensAreCached() throws Exception {
         HttpClient http = mock(HttpClient.class);

@@ -1,5 +1,6 @@
 package com.example.evalhub.invitation;
 
+import com.example.evalhub.entity.Role;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
@@ -30,13 +31,13 @@ public class GmailInvitationSender implements InvitationSender {
     GmailInvitationSender(InvitationSettings settings, ObjectMapper json, HttpClient http) {
         this.settings = settings; this.json = json; this.http = http;
     }
-    @Override public String send(String recipient, String temporaryPassword) {
+    @Override public String send(String recipient, String temporaryPassword, Role role) {
         if (!settings.enabled()) throw new DeliveryException("MAIL_DISABLED", false);
         for (int attempt = 0; attempt < 2; attempt++) {
             String token = token();
             String body;
             try { body = json.writeValueAsString(Map.of("raw", encodeMessage(settings.senderEmail(), recipient,
-                    temporaryPassword, settings.loginUrl()))); }
+                    temporaryPassword, settings.loginUrl(), role))); }
             catch (Exception e) { throw new DeliveryException("MESSAGE_ENCODING_ERROR", false); }
             HttpResponse<String> response = request(HttpRequest.newBuilder(URI.create("https://gmail.googleapis.com/gmail/v1/users/me/messages/send"))
                     .timeout(Duration.ofSeconds(30)).header("Authorization", "Bearer " + token)
@@ -102,12 +103,13 @@ public class GmailInvitationSender implements InvitationSender {
         }
     }
     private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
-    static String encodeMessage(String sender, String recipient, String password, String loginUrl) {
+    static String encodeMessage(String sender, String recipient, String password, String loginUrl, Role role) {
         if (!InvitationSecrets.validEmail(sender) || !InvitationSecrets.validEmail(recipient))
             throw new IllegalArgumentException("Invalid email address.");
-        String body = "심사위원 계정이 생성되었습니다.\n\n로그인 아이디: " + recipient + "\n임시 비밀번호: " + password
+        String label = role == Role.MANAGER ? "매니저" : "심사위원";
+        String body = label + " 계정이 생성되었습니다.\n\n로그인 아이디: " + recipient + "\n임시 비밀번호: " + password
                 + "\n\n임시 비밀번호는 로그인 후 설정 화면에서 변경할 수 있습니다.\n로그인: " + loginUrl + "\n";
-        String subject = Base64.getEncoder().encodeToString("[평가ON] 심사위원 계정 안내".getBytes(StandardCharsets.UTF_8));
+        String subject = Base64.getEncoder().encodeToString(("[평가ON] " + label + " 계정 안내").getBytes(StandardCharsets.UTF_8));
         String mime = "From: " + sender + "\r\nTo: " + recipient + "\r\nSubject: =?UTF-8?B?" + subject
                 + "?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
                 + Base64.getMimeEncoder().encodeToString(body.getBytes(StandardCharsets.UTF_8));

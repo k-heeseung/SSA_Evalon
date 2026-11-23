@@ -1,7 +1,14 @@
 package com.example.evalhub.invitation;
 
+import com.example.evalhub.entity.Role;
+
 public interface InvitationSender {
-    String send(String recipient, String temporaryPassword);
+    /** role에 따라 심사위원/매니저 안내 문구를 고른다. */
+    String send(String recipient, String temporaryPassword, Role role);
+
+    default String send(String recipient, String temporaryPassword) {
+        return send(recipient, temporaryPassword, Role.EVALUATOR);
+    }
 
     class DeliveryException extends RuntimeException {
         private final String code;

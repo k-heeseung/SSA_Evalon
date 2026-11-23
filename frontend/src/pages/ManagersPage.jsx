@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
-import { getManagers, createManager, deleteManager } from '../api/managers';
+import { getManagers, createManager, deleteManager, getManagerInvitations, retryManagerInvitation } from '../api/managers';
 import PageHeader from '../components/PageHeader';
+import InvitationStatus from '../components/InvitationStatus';
 import { queryKeys } from '../query/keys';
 import { useLiveApiQuery } from '../query/useApiQuery';
 import useCurrentUser from '../query/useCurrentUser';
@@ -32,6 +33,18 @@ export default function ManagersPage() {
   });
   const managers = managersQuery.data ?? [];
   const loading = managersQuery.isPending;
+  const invitationsQuery = useLiveApiQuery(queryKeys.managerInvitations, () => getManagerInvitations(), {
+    enabled: isSuperAdmin,
+    refetchInterval: 5000,
+  });
+  const invitations = new Map((invitationsQuery.data?.invitations ?? []).map((item) => [item.userId, item]));
+  const mailConfigured = invitationsQuery.data?.creationEnabled !== false;
+  const [notice, setNotice] = useState('');
+  const retryMutation = useMutation({
+    mutationFn: (id) => retryManagerInvitation(id),
+    onSuccess: () => { setNotice('안내 메일 재시도가 예약되었습니다.'); invitationsQuery.refetch(); },
+    onError: (err) => setNotice(err.response?.data?.message || '재시도를 요청하지 못했습니다.'),
+  });
   const deleteMutation = useMutation({
     mutationFn: (ids) => Promise.all(ids.map((id) => deleteManager(id))),
   });
@@ -94,6 +107,11 @@ export default function ManagersPage() {
           + 계정 생성
         </button>
       </PageHeader>
+
+      {notice && <p role="status" className="mb-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">{notice}</p>}
+      {invitationsQuery.isError && <p role="alert" className="mb-4 text-sm text-red-600">메일 발송 상태를 불러오지 못했습니다.</p>}
+      {invitationsQuery.data?.creationEnabled === false && <p className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">메일 설정을 준비 중입니다. 지금은 안내 메일 없이 계정만 생성할 수 있습니다.</p>}
+      {invitationsQuery.data?.deliveryEnabled === false && <p className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">메일 발송이 비활성화되어 있습니다. 생성한 계정의 안내 메일은 발송 대기 상태로 보관됩니다.</p>}
 
       {/* 통계 카드 */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
@@ -184,17 +202,18 @@ export default function ManagersPage() {
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">학과·소속</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">담당 프로그램</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">상태</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">안내 메일</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {loading ? (
               <tr>
-                <td colSpan={editMode ? 7 : 6} className="text-center py-12 text-gray-500">로딩 중...</td>
+                <td colSpan={editMode ? 8 : 7} className="text-center py-12 text-gray-500">로딩 중...</td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={editMode ? 7 : 6} className="text-center py-12 text-gray-500">등록된 매니저가 없습니다.</td>
+                <td colSpan={editMode ? 8 : 7} className="text-center py-12 text-gray-500">등록된 매니저가 없습니다.</td>
               </tr>
             ) : (
               filtered.map((manager) => {
@@ -239,6 +258,10 @@ export default function ManagersPage() {
                         </span>
                       </div>
                     </td>
+                    <td className="px-4 py-4 text-sm">
+                      <InvitationStatus invitation={invitations.get(manager.id)}
+                        pending={retryMutation.isPending} onRetry={() => retryMutation.mutate(manager.id)} />
+                    </td>
                     <td className="px-4 py-4 text-right">
                       {!editMode && <button className="ui-button ui-button--ghost text-gray-500 hover:text-gray-600 cursor-pointer">···</button>}
                     </td>
@@ -252,8 +275,15 @@ export default function ManagersPage() {
 
       {showModal && (
         <CreateManagerModal
+          mailConfigured={mailConfigured}
           onClose={() => setShowModal(false)}
-          onCreated={() => setShowModal(false)}
+          onCreated={({ sendInvitation }) => {
+            setShowModal(false);
+            setNotice(sendInvitation
+              ? '매니저 계정을 생성했습니다. 안내 메일 처리 결과는 목록에서 확인하세요.'
+              : '매니저 계정을 생성했습니다. 임시 비밀번호를 직접 전달해주세요.');
+            invitationsQuery.refetch();
+          }}
         />
       )}
     </div>
@@ -314,13 +344,15 @@ function CheckIcon() {
   );
 }
 
-function CreateManagerModal({ onClose, onCreated }) {
+function CreateManagerModal({ mailConfigured, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [department, setDepartment] = useState('');
   const [email, setEmail] = useState('');
   const [randomPassword, setRandomPassword] = useState(() => generateRandomPassword());
   const [error, setError] = useState('');
-  const [sendEmail, setSendEmail] = useState(true);
+  const [sendEmailChoice, setSendEmail] = useState(true);
+  // 서버에 메일 암호화 키가 없으면 발송 요청이 503으로 거절되므로 체크를 끈다.
+  const sendEmail = mailConfigured && sendEmailChoice;
   const [copied, setCopied] = useState(false);
   const emailValid = email.includes('@') && email.length > 4;
   const createMutation = useMutation({
@@ -329,6 +361,7 @@ function CreateManagerModal({ onClose, onCreated }) {
       password: randomPassword,
       name: name.trim() || null,
       department: department.trim() || null,
+      sendInvitation: sendEmail,
     }),
   });
   const submitting = createMutation.isPending;
@@ -348,7 +381,7 @@ function CreateManagerModal({ onClose, onCreated }) {
     setError('');
     try {
       await createMutation.mutateAsync();
-      onCreated();
+      onCreated({ sendInvitation: sendEmail });
     } catch (err) {
       const msg = err.response?.status === 409
         ? '이미 등록된 이메일입니다.'
@@ -441,19 +474,25 @@ function CreateManagerModal({ onClose, onCreated }) {
                 </button>
               </div>
               <p className="text-xs text-gray-500">
-                계정 정보는 이메일로 자동 전송됩니다. 첫 로그인 시 비밀번호 변경이 권장됩니다.
+                {sendEmail
+                  ? '계정 정보가 입력한 이메일로 발송됩니다. 첫 로그인 시 비밀번호 변경이 권장됩니다.'
+                  : '메일을 보내지 않습니다. 임시 비밀번호를 복사해 직접 전달해주세요.'}
               </p>
             </div>
           </div>
 
-          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+          <label className={`flex items-center gap-2.5 select-none ${mailConfigured ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
             <input
               type="checkbox"
               checked={sendEmail}
+              disabled={!mailConfigured}
               onChange={(e) => setSendEmail(e.target.checked)}
-              className="w-4 h-4 accent-blue-600 rounded cursor-pointer"
+              className="w-4 h-4 accent-blue-600 rounded cursor-pointer disabled:cursor-not-allowed"
             />
-            <span className="text-sm text-gray-700">계정 생성 후 즉시 안내 메일 발송</span>
+            <span className="text-sm text-gray-700">
+              계정 생성 후 즉시 안내 메일 발송
+              {!mailConfigured && <span className="text-gray-500"> · 메일 설정 준비 중</span>}
+            </span>
           </label>
 
           {error && <p className="text-red-500 text-sm">{error}</p>}
@@ -471,7 +510,7 @@ function CreateManagerModal({ onClose, onCreated }) {
               disabled={submitting}
               className="ui-button ui-button--primary flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              {submitting ? '생성 중...' : '생성 및 발송'}
+              {submitting ? '생성 중...' : sendEmail ? '생성 및 메일 예약' : '계정 생성'}
             </button>
           </div>
         </form>

@@ -1,5 +1,8 @@
 package com.example.evalhub.service;
 
+import com.example.evalhub.invitation.EvaluatorInvitationService;
+import com.example.evalhub.invitation.InvitationSecrets;
+
 import com.example.evalhub.dto.*;
 import com.example.evalhub.entity.*;
 import com.example.evalhub.repository.*;
@@ -38,6 +41,7 @@ public class ProgramManagementService {
     private final ApplicationAnswerRepository answerRepository;
     private final ParticipantAttachmentRepository attachmentRepository;
     private final PasswordEncoder passwordEncoder;
+    private final EvaluatorInvitationService invitationService;
 
     public ProgramManagementService(
             ProgramRepository programRepository,
@@ -50,7 +54,8 @@ public class ProgramManagementService {
             ApplicationRepository applicationRepository,
             ApplicationAnswerRepository answerRepository,
             ParticipantAttachmentRepository attachmentRepository,
-            PasswordEncoder passwordEncoder
+            PasswordEncoder passwordEncoder,
+            EvaluatorInvitationService invitationService
     ) {
         this.programRepository = programRepository;
         this.userRepository = userRepository;
@@ -63,6 +68,7 @@ public class ProgramManagementService {
         this.answerRepository = answerRepository;
         this.attachmentRepository = attachmentRepository;
         this.passwordEncoder = passwordEncoder;
+        this.invitationService = invitationService;
     }
 
     // 프로그램 편집 화면의 전체 상태(기본 정보·평가 기준·지원 양식 항목)를 한 트랜잭션으로 생성한다.
@@ -770,19 +776,32 @@ public class ProgramManagementService {
                 || request.role() == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Email, password and role are required.");
         }
+        boolean sendInvitation = request.invitationRequested();
+        if (sendInvitation && request.role() != Role.MANAGER) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "안내 메일은 매니저 계정에만 발송할 수 있습니다.");
+        }
         String email = request.email().trim().toLowerCase();
+        if (sendInvitation) {
+            // 계정을 만들기 전에 확인해서, 메일을 보낼 수 없으면 계정도 만들지 않는다.
+            invitationService.requireConfigured();
+            if (!InvitationSecrets.validEmail(email)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "올바른 이메일 주소를 입력해주세요.");
+            }
+        }
         userRepository.findByEmailIgnoreCase(email).ifPresent(user -> {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already exists.");
         });
 
-        User user = new User(
+        User user = userRepository.saveAndFlush(new User(
                 email,
                 passwordEncoder.encode(request.password()),
                 request.role(),
                 request.name(),
                 request.department()
-        );
-        return UserResponse.from(userRepository.save(user));
+        ));
+        // 같은 트랜잭션이라 대기열 저장이 실패하면 계정 생성도 롤백된다.
+        if (sendInvitation) invitationService.enqueue(user, request.password());
+        return UserResponse.from(user);
     }
 
     // 이메일로 사용자를 조회한다. 팀원 추가 화면에서 실제 존재하는 사용자인지 확인하는 데 사용한다.
