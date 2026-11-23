@@ -127,7 +127,7 @@ class AccountDeletionIntegrationTests {
 
         mvc.perform(get("/api/auth/me").cookie(token)).andExpect(status().isUnauthorized())
                 .andExpect(header().stringValues(HttpHeaders.SET_COOKIE, org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("EVALHUB_ACCESS_TOKEN=;"))));
-        mvc.perform(post("/api/auth/login").contentType("application/json").content(loginBody(deleted)))
+        mvc.perform(post("/api/auth/login").contentType("application/json").content(loginBody(f.evaluator())))
                 .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/evaluators/" + deleted.getId() + "/status").with(user("manager").roles("MANAGER")).with(csrf())
                         .contentType("application/json").content("{\"status\":\"ACTIVE\"}"))
@@ -137,6 +137,19 @@ class AccountDeletionIntegrationTests {
                 .andExpect(status().isConflict());
         mvc.perform(post("/api/evaluators/" + deleted.getId() + "/invitation/retry").with(user("manager").roles("MANAGER")).with(csrf()))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test void evaluatorDeletionReleasesEmailForNewAccount() throws Exception {
+        User evaluator = account(Role.EVALUATOR);
+        String originalEmail = evaluator.getEmail();
+        mvc.perform(delete("/api/users/" + evaluator.getId()).with(user("manager").roles("MANAGER")).with(csrf()))
+                .andExpect(status().isOk());
+        em.flush(); em.clear();
+
+        assertThat(users.findById(evaluator.getId()).orElseThrow().getEmail()).isEqualTo(User.deletedEmail(evaluator.getId()));
+        User reused = users.saveAndFlush(new User(originalEmail, passwords.encode("test-password"), Role.MANAGER, "New", "Dept"));
+        assertThat(users.findByEmailIgnoreCase(originalEmail)).get().extracting(User::getId).isEqualTo(reused.getId());
+        login(reused);
     }
 
     @ParameterizedTest @ValueSource(booleans = {false, true})

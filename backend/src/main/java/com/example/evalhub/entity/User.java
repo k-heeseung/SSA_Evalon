@@ -51,6 +51,13 @@ public class User {
         if (role != Role.EVALUATOR) throw new IllegalStateException("Only evaluator accounts can be soft-deleted.");
         if (deletedAt == null) deletedAt = java.time.Instant.now();
         status = Status.INACTIVE;
+        // users.email은 unique라, 원래 주소를 비워 두어야 같은 이메일로 계정을 다시 만들 수 있다.
+        // V26 마이그레이션과 같은 형식을 유지한다.
+        email = deletedEmail(id);
+    }
+
+    public static String deletedEmail(Long id) {
+        return "deleted-" + id + "@deleted.invalid";
     }
 
     public User(String email, String password, Role role) {
