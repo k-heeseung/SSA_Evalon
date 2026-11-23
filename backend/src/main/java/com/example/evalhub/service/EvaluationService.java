@@ -237,6 +237,9 @@ public class EvaluationService {
         validateEvaluationStarted(assignment);
         validateEvaluationNotClosed(assignment);
         validateOneLineComment(request.oneLineComment());
+        if (submit) {
+            requireOneLineComment(request.oneLineComment());
+        }
 
         List<EvaluationCriterion> criteria = criterionRepository
                 .findByProgramIdOrderByDisplayOrderAsc(assignment.getProgram().getId());
@@ -480,6 +483,13 @@ public class EvaluationService {
         }
         if (oneLineComment.length() > 500 || oneLineComment.contains("\n") || oneLineComment.contains("\r")) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "One-line comment must be 500 characters or less without line breaks.");
+        }
+    }
+
+    // 최종 제출(수정 제출 포함)에는 한줄평이 필요하다. 임시저장은 비어 있어도 된다.
+    private void requireOneLineComment(String oneLineComment) {
+        if (oneLineComment == null || oneLineComment.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "한줄평을 입력해주세요.");
         }
     }
 

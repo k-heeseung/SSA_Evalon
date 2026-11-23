@@ -91,7 +91,7 @@ class EvaluationScoreReplacementTest {
     @Test
     void incompleteFinalSubmissionDoesNotModifyStoredScores() {
         assertThatThrownBy(() -> service.submit(3L, 4L, 2L,
-                new SaveEvaluationRequest(null, List.of(new EvaluationScoreRequest(6L, BigDecimal.ZERO)))))
+                new SaveEvaluationRequest("comment", List.of(new EvaluationScoreRequest(6L, BigDecimal.ZERO)))))
                 .isInstanceOf(ResponseStatusException.class);
         verifyNoInteractions(scores);
     }

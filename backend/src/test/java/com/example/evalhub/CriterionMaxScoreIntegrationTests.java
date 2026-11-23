@@ -71,7 +71,7 @@ class CriterionMaxScoreIntegrationTests {
     SaveEvaluationRequest scores(List<CriterionResponse> cs, String... values) {
         var scores = new ArrayList<EvaluationScoreRequest>();
         for(int i=0;i<values.length;i++) scores.add(new EvaluationScoreRequest(cs.get(i).id(),new BigDecimal(values[i])));
-        return new SaveEvaluationRequest(null,scores);
+        return new SaveEvaluationRequest("comment",scores);
     }
     @Test void variableMaxScoresPersistAndTotalsAreSimpleSums() {
         var cs=save(item(null,"item1","40"),item(null,"item2","35"),item(null,"item3","25"));

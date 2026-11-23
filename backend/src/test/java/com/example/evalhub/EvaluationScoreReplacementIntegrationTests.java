@@ -81,7 +81,7 @@ class EvaluationScoreReplacementIntegrationTests {
     @Test
     void incompleteSubmissionIsRejectedBeforeExistingScoresChange() {
         assertThatThrownBy(() -> service.submit(assignmentId, teamId, evaluatorId,
-                new SaveEvaluationRequest(null, List.of(score(secondCriterion, 6)))))
+                new SaveEvaluationRequest("comment", List.of(score(secondCriterion, 6)))))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
         var saved = service.getEvaluationView(assignmentId, teamId, evaluatorId).submission();
@@ -93,7 +93,7 @@ class EvaluationScoreReplacementIntegrationTests {
     void clearingAScoreStillPreventsFinalSubmission() {
         save(List.of(score(secondCriterion, 7)));
         assertThatThrownBy(() -> service.submit(assignmentId, teamId, evaluatorId,
-                new SaveEvaluationRequest(null, List.of(score(secondCriterion, 7)))))
+                new SaveEvaluationRequest("comment", List.of(score(secondCriterion, 7)))))
                 .isInstanceOf(ResponseStatusException.class);
     }
 
@@ -101,7 +101,7 @@ class EvaluationScoreReplacementIntegrationTests {
     void allCriteriaIncludingZeroCanBeSubmittedAfterClearingAndRefilling() {
         save(List.of());
         var saved = service.submit(assignmentId, teamId, evaluatorId,
-                new SaveEvaluationRequest(null, List.of(score(firstCriterion, 0), score(secondCriterion, 7))));
+                new SaveEvaluationRequest("comment", List.of(score(firstCriterion, 0), score(secondCriterion, 7))));
         assertThat(saved.status()).isEqualTo(SubmissionStatus.SUBMITTED);
         assertReloaded(saved.id(), List.of(firstCriterion, secondCriterion), "7");
     }
@@ -123,6 +123,47 @@ class EvaluationScoreReplacementIntegrationTests {
         assertThat(edited.status()).isEqualTo(SubmissionStatus.SUBMITTED);
         assertThat(edited.oneLineComment()).isEqualTo("edited");
         assertReloaded(edited.id(), List.of(firstCriterion, secondCriterion), "16");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {" ", "   ", "	"})
+    void finalSubmissionRequiresOneLineComment(String comment) {
+        assertThatThrownBy(() -> service.submit(assignmentId, teamId, evaluatorId,
+                new SaveEvaluationRequest(comment, List.of(score(firstCriterion, 9), score(secondCriterion, 7)))))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                    assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(error.getReason()).isEqualTo("한줄평을 입력해주세요.");
+                });
+        var saved = service.getEvaluationView(assignmentId, teamId, evaluatorId).submission();
+        assertThat(saved.status()).isEqualTo(SubmissionStatus.DRAFT);
+        assertThat(saved.totalScore()).isEqualByComparingTo("15");
+    }
+
+    @Test
+    void draftAllowsEmptyOneLineComment() {
+        var draft = service.saveDraft(assignmentId, teamId, evaluatorId,
+                new SaveEvaluationRequest("  ", List.of(score(firstCriterion, 8), score(secondCriterion, 7))));
+        assertThat(draft.status()).isEqualTo(SubmissionStatus.DRAFT);
+        assertThat(save(List.of(score(firstCriterion, 8))).status()).isEqualTo(SubmissionStatus.DRAFT);
+    }
+
+    @Test
+    void finalSubmissionSucceedsWithOneLineComment() {
+        var submitted = service.submit(assignmentId, teamId, evaluatorId,
+                new SaveEvaluationRequest("좋은 아이디어", List.of(score(firstCriterion, 8), score(secondCriterion, 7))));
+        assertThat(submitted.status()).isEqualTo(SubmissionStatus.SUBMITTED);
+        assertThat(submitted.oneLineComment()).isEqualTo("좋은 아이디어");
+    }
+
+    @Test
+    void editingSubmittedEvaluationCannotClearOneLineComment() {
+        service.submit(assignmentId, teamId, evaluatorId,
+                new SaveEvaluationRequest("original", List.of(score(firstCriterion, 8), score(secondCriterion, 7))));
+        assertThatThrownBy(() -> service.submit(assignmentId, teamId, evaluatorId,
+                new SaveEvaluationRequest(" ", List.of(score(firstCriterion, 9), score(secondCriterion, 7)))))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
     }
 
     private EvaluationScoreRequest score(Long criterion, int value) {

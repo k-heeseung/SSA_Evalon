@@ -74,7 +74,7 @@ class MultipleBonusIntegrationTests {
         return List.of(new BonusItemRequest(first,"지역 기업",max),new BonusItemRequest(second,"교육 수료",new BigDecimal("2")));
     }
     void start(boolean submit) {
-        var request = new SaveEvaluationRequest(null,List.of(new EvaluationScoreRequest(criterionId,new BigDecimal("8"))));
+        var request = new SaveEvaluationRequest("comment",List.of(new EvaluationScoreRequest(criterionId,new BigDecimal("8"))));
         if(submit) evaluator.submit(assignmentId,teamId,evaluatorId,request);
         else evaluator.saveDraft(assignmentId,teamId,evaluatorId,request);
     }

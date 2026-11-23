@@ -61,6 +61,8 @@ export default function EvaluationPage() {
   const [reloadingSubmission, setReloadingSubmission] = useState(false);
   const [reloadError, setReloadError] = useState('');
   const conflictDialogRef = useRef(null);
+  // 한줄평 없이 제출하려 할 때 입력란으로 커서를 옮긴다.
+  const commentInputRef = useRef(null);
 
   useEffect(() => {
     if (submissionConflict && !conflictDialogRef.current?.open) conflictDialogRef.current?.showModal();
@@ -236,6 +238,12 @@ export default function EvaluationPage() {
     if (inFlightRef.current || saving || submitting || !view || submissionConflict) return;
     const blocked = periodMessage();
     if (blocked) { setMessage(blocked); return; }
+    // 최종 제출(수정 완료 포함)에는 한줄평이 필수다. 서버도 같은 규칙으로 400을 돌려준다.
+    if (!comment.trim()) {
+      setMessage('제출 실패: 한줄평을 입력해주세요.');
+      commentInputRef.current?.focus();
+      return;
+    }
     const isSubmittedEdit = isSubmitted && isEditingSubmitted;
     setMessage('');
     inFlightRef.current = 'submit';
@@ -345,6 +353,8 @@ export default function EvaluationPage() {
   const totalScore = Math.round(criteria.reduce((sum, c) => sum + (Number(scores[c.id]) || 0), 0) * 10) / 10;
   const maxTotal = criteria.reduce((sum, c) => sum + (c.maxScore || 0), 0);
   const allScored = scoredCount === criteria.length && criteria.length > 0;
+  const commentFilled = comment.trim() !== '';
+  const canSubmit = allScored && commentFilled;
   const files = view.attachments || [];
   const activePdfIndex = Math.min(pdfIndex, Math.max(0, files.length - 1));
   const isSubmittedReadOnly = isSubmitted && !isEditingSubmitted;
@@ -785,9 +795,16 @@ export default function EvaluationPage() {
 
             {/* 한줄평 */}
             <div className="rounded-xl border border-gray-200 p-4">
-              <label className="block text-sm font-semibold text-gray-700 mb-2">한줄평 (선택)</label>
+              <label htmlFor="evaluation-one-line-comment" className="block text-sm font-semibold text-gray-700 mb-2">
+                한줄평 <span className="text-red-500" aria-hidden="true">*</span>
+                <span className="ml-1 text-xs font-normal text-gray-500">최종 제출 시 필수</span>
+              </label>
               <input
+                id="evaluation-one-line-comment"
+                ref={commentInputRef}
                 type="text"
+                required
+                aria-required="true"
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 disabled={isReadOnly}
@@ -827,9 +844,9 @@ export default function EvaluationPage() {
                 제출된 심사 수정 중 · 수정 완료 시 즉시 반영됩니다.
               </div>
             ) : (
-              !allScored && criteria.length > 0 && (
+              !canSubmit && criteria.length > 0 && (
                 <div className="px-4 py-2 text-xs text-center text-gray-500 bg-gray-50">
-                  모든 항목 심사 시 제출할 수 있습니다.
+                  {allScored ? '한줄평을 입력하면 제출할 수 있습니다.' : '모든 항목 심사와 한줄평 입력 후 제출할 수 있습니다.'}
                 </div>
               )
             )}
@@ -915,7 +932,7 @@ export default function EvaluationPage() {
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={submitting || !allScored || !dirty}
+                  disabled={submitting || !canSubmit || !dirty}
                   className="ui-button ui-button--primary flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 >
                   {submitting ? '수정 중...' : '수정 완료'}
@@ -935,14 +952,14 @@ export default function EvaluationPage() {
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={saving || submitting || !allScored}
+                  disabled={saving || submitting || !canSubmit}
                   className={`min-h-11 flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 cursor-pointer flex items-center justify-center gap-1.5 ${
-                    allScored
+                    canSubmit
                       ? 'bg-blue-600 text-white hover:bg-blue-700'
                       : 'bg-gray-200 text-gray-500 cursor-not-allowed'
                   }`}
                 >
-                  {submitting ? '제출 중...' : allScored ? '최종 제출' : `${criteria.length - scoredCount}개 항목 남음`}
+                  {submitting ? '제출 중...' : !allScored ? `${criteria.length - scoredCount}개 항목 남음` : commentFilled ? '최종 제출' : '한줄평을 입력해주세요'}
                 </button>
               </div>
             )}
