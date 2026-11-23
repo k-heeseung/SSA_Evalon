@@ -230,7 +230,9 @@ export default function EvaluatorsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-600">{evaluator.department || '—'}</td>
-                    <td className="px-4 py-4 text-sm text-gray-700">{evaluator.assignmentCount ?? '—'}</td>
+                    <td className="px-4 py-4 text-sm text-gray-700">
+                      <AssignmentCounts evaluation={evaluator.assignmentCount} results={evaluator.resultAssignmentCount} />
+                    </td>
                     <td className="px-4 py-4 text-sm">
                       <InvitationStatus invitation={invitations.get(evaluator.id)}
                         pending={retryMutation.isPending} onRetry={() => retryMutation.mutate(evaluator.id)} />
@@ -254,12 +256,46 @@ export default function EvaluatorsPage() {
 }
 
 
+// 심사위원 목록의 배정 수. 심사 배정과 결과 조회 배정을 나눠 보여 준다.
+function AssignmentCounts({ evaluation, results }) {
+  if (evaluation == null) return '—';
+  if (!results) return evaluation;
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">심사 {evaluation}</span>
+      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">결과 {results}</span>
+    </span>
+  );
+}
+
+// 프로그램별 권한 토글. 심사 = 파랑, 결과 조회 = 보라 (배정 매트릭스와 같은 색)
+function PermissionToggle({ label, active, tone, onClick }) {
+  const on = tone === 'results' ? 'bg-violet-50 text-violet-700 border-violet-300' : 'bg-blue-50 text-blue-700 border-blue-300';
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`ui-button ui-button--ghost px-2.5 py-1 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
+        active ? on : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+      }`}
+    >
+      {active && <span className="mr-1">✓</span>}{label}
+    </button>
+  );
+}
+
+const DEFAULT_PERMISSIONS = { canEvaluate: true, canViewResults: false };
+
 function CreateEvaluatorModal({ onClose, onCreated }) {
   const [name, setName] = useState('');
   const [department, setDepartment] = useState('');
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [selectedProgramIds, setSelectedProgramIds] = useState([]);
+  // 프로그램 id → { canEvaluate, canViewResults }. 칩을 고르면 심사만 켜진 상태로 시작한다.
+  const [programPermissions, setProgramPermissions] = useState({});
+  const permissionsOf = (programId) => programPermissions[programId] ?? DEFAULT_PERMISSIONS;
   const emailValid = email.includes('@') && email.length > 4;
   const programsQuery = useLiveApiQuery(queryKeys.programs, () => getPrograms());
   const programs = (programsQuery.data ?? []).filter((program) => program.status !== 'DRAFT');
@@ -271,7 +307,7 @@ function CreateEvaluatorModal({ onClose, onCreated }) {
   });
   const assignmentMutation = useMutation({
     mutationFn: async ({ evaluatorId, targets }) => {
-      const results = await Promise.allSettled(targets.map((program) => createAssignment(program.id, { evaluatorId })));
+      const results = await Promise.allSettled(targets.map((program) => createAssignment(program.id, { evaluatorId, ...permissionsOf(program.id) })));
       return targets.flatMap((program, index) => results[index].status === 'rejected'
         ? [{ ...program, message: results[index].reason?.response?.data?.message || '배정 요청을 완료하지 못했습니다.' }] : []);
     },
@@ -283,18 +319,31 @@ function CreateEvaluatorModal({ onClose, onCreated }) {
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
     );
   };
+  const togglePermission = (programId, key) => {
+    setError('');
+    setProgramPermissions((prev) => {
+      const current = prev[programId] ?? DEFAULT_PERMISSIONS;
+      return { ...prev, [programId]: { ...current, [key]: !current[key] } };
+    });
+  };
+  const selectedPrograms = programs.filter((program) => selectedProgramIds.includes(program.id));
+  const missingPermission = selectedPrograms.some((program) => {
+    const permissions = permissionsOf(program.id);
+    return !permissions.canEvaluate && !permissions.canViewResults;
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (requestLock.current) return;
     if (!createdAccount && !email.trim()) { setError('이메일을 입력해주세요.'); return; }
     if (!createdAccount && !emailValid) { setError('올바른 이메일 주소를 입력해주세요.'); return; }
+    if (!createdAccount && missingPermission) { setError('선택한 프로그램마다 심사 또는 결과 조회 권한을 하나 이상 골라 주세요.'); return; }
     requestLock.current = true;
     setError('');
     try {
       const account = createdAccount || (await createMutation.mutateAsync()).data || { email };
       if (!createdAccount) setCreatedAccount(account);
-      const targets = createdAccount ? failedPrograms : programs.filter((program) => selectedProgramIds.includes(program.id));
+      const targets = createdAccount ? failedPrograms : selectedPrograms;
       if (targets.length && !account?.id) {
         setFailedPrograms(targets);
         setError('계정은 생성되었지만 계정 식별자를 확인하지 못해 배정할 수 없습니다. 목록을 새로 확인해주세요.');
@@ -414,6 +463,26 @@ function CreateEvaluatorModal({ onClose, onCreated }) {
                       {selected && <span className="mr-1">✓</span>}
                       {p.title}
                     </button>
+                  );
+                })}
+              </div>
+            )}
+            {selectedPrograms.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-gray-500">
+                  프로그램별 권한 · <span className="text-blue-700">심사</span>는 팀 채점, <span className="text-violet-700">결과 조회</span>는 평가 결과 열람(읽기 전용)
+                </p>
+                {selectedPrograms.map((program) => {
+                  const permissions = permissionsOf(program.id);
+                  const none = !permissions.canEvaluate && !permissions.canViewResults;
+                  return (
+                    <div key={program.id} className={`flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border ${none ? 'border-red-200 bg-red-50' : 'border-gray-200'}`}>
+                      <span className="text-sm font-medium text-gray-800 min-w-0 break-words">{program.title}</span>
+                      <span className="flex gap-1.5" role="group" aria-label={`${program.title} 권한`}>
+                        <PermissionToggle label="심사" active={permissions.canEvaluate} onClick={() => togglePermission(program.id, 'canEvaluate')} />
+                        <PermissionToggle label="결과 조회" tone="results" active={permissions.canViewResults} onClick={() => togglePermission(program.id, 'canViewResults')} />
+                      </span>
+                    </div>
                   );
                 })}
               </div>

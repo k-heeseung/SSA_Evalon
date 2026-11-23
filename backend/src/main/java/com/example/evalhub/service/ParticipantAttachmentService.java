@@ -259,10 +259,11 @@ public class ParticipantAttachmentService {
     private boolean isAssignedEvaluator(Team team, AuthenticatedUser user) {
         return user.role() == Role.EVALUATOR
                 && isEvaluable(team)
-                && assignmentRepository.findByProgramIdAndEvaluatorId(
+                // 결과 조회 권한만 있는 배정으로는 지원 팀의 첨부 PDF를 열 수 없다.
+                && assignmentRepository.existsByProgramIdAndEvaluatorIdAndCanEvaluateTrue(
                         team.getProgram().getId(),
                         user.id()
-                ).isPresent();
+                );
     }
 
     private boolean isEvaluable(Team team) {

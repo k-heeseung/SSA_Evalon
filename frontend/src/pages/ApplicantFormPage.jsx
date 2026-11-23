@@ -7,6 +7,11 @@ import { uploadSelectionError, uploadFilesTogether, uploadResultMessage } from '
 import { isFileField, formatFileSize } from '../utils/applicant';
 import { formatPhone, formatPhoneInput, isValidPhone, toDigits } from '../utils/phone';
 import FieldInput from '../components/FieldInput';
+import CustomApplicantInputs from '../components/CustomApplicantInputs';
+import {
+  usesCustomApplicantFields, isApplicantRowComplete, toCustomApplicantState,
+  customApplicantPayload, missingCustomApplicantFields, applicantValue,
+} from '../utils/applicantFields';
 import { normalizeFieldType, hasCheckboxSelection } from '../utils/formFields';
 import { queryKeys } from '../query/keys';
 import { useLiveApiQuery } from '../query/useApiQuery';
@@ -108,6 +113,9 @@ export default function ApplicantFormPage() {
   const [pEmail, setPEmail] = useState('');
   const [pPhone, setPPhone] = useState('');
   const [members, setMembers] = useState([]); // [{ name, email, phone }]
+  // 매니저가 항목을 직접 정한 프로그램의 본인(대표자) 값과 팀원 행 (utils/applicantFields.js)
+  const [customValues, setCustomValues] = useState({});
+  const [customMembers, setCustomMembers] = useState([]); // [{ values }]
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [missingRequiredFields, setMissingRequiredFields] = useState([]);
@@ -153,6 +161,9 @@ export default function ApplicantFormPage() {
     setMembers(Array.isArray(info.members)
       ? info.members.map((m) => ({ name: m.name || '', email: m.email || '', phone: formatPhone(m.phone) }))
       : []);
+    const custom = toCustomApplicantState(info);
+    setCustomValues(custom.values);
+    setCustomMembers(custom.members);
     const initial = {};
     data.fields.forEach((f) => { initial[f.fieldId] = f.value || ''; });
     setValues(initial);
@@ -173,22 +184,36 @@ export default function ApplicantFormPage() {
 
   // 지원 방식: 팀 지원이면 팀명 + 팀원, 개인 지원이면 본인 정보만.
   const isTeam = app.participantType === 'TEAM';
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목(이름·이메일·연락처, 팀원 명단) 방식이다.
+  const isCustom = usesCustomApplicantFields(app.applicantFields);
+  const applicantFields = isCustom ? app.applicantFields : [];
+  const customState = { teamName, values: customValues, members: customMembers };
 
   // PDF 첨부는 프로그램의 첨부파일 설정(attachmentsEnabled)으로 노출한다.
   const attachmentsEnabled = !!app.attachmentsEnabled;
   const maxAttachments = app.maxAttachments || 1;
   const canUploadMore = attachmentsEnabled && attachments.length < maxAttachments;
 
-  // 작성 진행률: 본인 정보 1 + (팀이면 팀명 1) + 답변 항목 + (첨부 사용 시) 첨부 1
-  const totalFields = 1 + (isTeam ? 1 : 0) + textFields.length + (attachmentsEnabled ? 1 : 0);
+  // 작성 진행률: 본인 정보(직접 정한 항목이면 항목 수, 아니면 1) + (팀이면 팀명 1) + 답변 항목 + (첨부 사용 시) 첨부 1
+  const participantTotal = isCustom ? applicantFields.length : 1;
+  const participantFilled = isCustom
+    ? applicantFields.filter((f) => applicantValue(customValues, f.id).trim() !== '').length
+    : (pName.trim() !== '' ? 1 : 0);
+  const totalFields = participantTotal + (isTeam ? 1 : 0) + textFields.length + (attachmentsEnabled ? 1 : 0);
   const filledFields =
-    (pName.trim() !== '' ? 1 : 0) +
+    participantFilled +
     (isTeam ? (teamName.trim() !== '' ? 1 : 0) : 0) +
     textFields.filter((f) => (values[f.fieldId] || '').trim() !== '').length +
     (attachmentsEnabled && attachments.length > 0 ? 1 : 0);
   const progress = totalFields === 0 ? 0 : Math.round((filledFields / totalFields) * 100);
 
-  const buildPayload = () => ({
+  const buildPayload = () => (isCustom ? {
+    ...customApplicantPayload(applicantFields, isTeam, customState),
+    participantName: null,
+    participantEmail: null,
+    participantPhone: null,
+    answers: textFields.map((f) => ({ formFieldId: f.fieldId, value: values[f.fieldId] ?? '' })),
+  } : {
     teamName: isTeam ? (teamName.trim() || null) : null,
     participantName: pName.trim() || null,
     participantEmail: pEmail.trim() || null,
@@ -204,8 +229,12 @@ export default function ApplicantFormPage() {
   const findMissingRequiredFields = () => {
     const missing = [];
 
-    if (isTeam && !teamName.trim()) missing.push('팀 이름');
-    if (!pName.trim()) missing.push(isTeam ? '팀장 이름' : '이름');
+    if (isCustom) {
+      missing.push(...missingCustomApplicantFields(applicantFields, isTeam, customState));
+    } else {
+      if (isTeam && !teamName.trim()) missing.push('팀 이름');
+      if (!pName.trim()) missing.push(isTeam ? '팀장 이름' : '이름');
+    }
 
     app.fields.filter((field) => field.required).forEach((field) => {
       if (isFileField(field.fieldType)) {
@@ -233,6 +262,8 @@ export default function ApplicantFormPage() {
 
   // 연락처는 선택 항목이지만, 입력했다면 형식이 맞아야 한다. 문제가 있으면 안내 문구를 반환한다.
   const findPhoneError = () => {
+    // 직접 정한 항목은 형식 제한 없는 단답형이다.
+    if (isCustom) return '';
     if (pPhone.trim() && !isValidPhone(pPhone)) {
       return isTeam
         ? '대표 연락처 형식이 올바르지 않습니다. (예: 010-1234-5678)'
@@ -379,7 +410,30 @@ export default function ApplicantFormPage() {
 
       <div className="space-y-4">
         {/* 지원 방식별 본인/팀 정보 */}
-        {isTeam ? (
+        {isCustom ? (
+          (isTeam || applicantFields.length > 0) && (
+            <FieldCard>
+              <div className="flex items-center gap-2 mb-4">
+                <h3 className="font-semibold text-gray-800">{isTeam ? '팀 정보' : '지원자 정보'}</h3>
+                <RequiredTag />
+                {isTeam && applicantFields.length > 0 && !isApplicantRowComplete(applicantFields, customValues) && (
+                  <span className="text-xs text-gray-500">대표자와 팀원마다 모든 항목을 입력해주세요.</span>
+                )}
+              </div>
+              <CustomApplicantInputs
+                fields={applicantFields}
+                isTeam={isTeam}
+                teamName={teamName}
+                onTeamNameChange={setTeamName}
+                values={customValues}
+                onValuesChange={setCustomValues}
+                members={customMembers}
+                onMembersChange={setCustomMembers}
+                disabled={writeBlocked}
+              />
+            </FieldCard>
+          )
+        ) : isTeam ? (
           <FieldCard>
             <div className="flex items-center gap-2 mb-4">
               <h3 className="font-semibold text-gray-800">팀 정보</h3>

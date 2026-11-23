@@ -1,5 +1,6 @@
 package com.example.evalhub.repository;
 
+import com.example.evalhub.entity.AssignmentStatus;
 import com.example.evalhub.entity.EvaluationAssignment;
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -12,11 +13,18 @@ public interface EvaluationAssignmentRepository extends JpaRepository<Evaluation
 
     List<EvaluationAssignment> findByProgramIdOrderByIdAsc(Long programId);
 
+    // 결과 집계의 심사위원 열. 결과 조회만 가진 배정은 심사위원으로 세지 않는다.
+    List<EvaluationAssignment> findByProgramIdAndCanEvaluateTrueOrderByIdAsc(Long programId);
+
     Optional<EvaluationAssignment> findByProgramIdAndEvaluatorId(Long programId, Long evaluatorId);
 
-    long countByProgramId(Long programId);
+    boolean existsByProgramIdAndEvaluatorIdAndCanEvaluateTrue(Long programId, Long evaluatorId);
 
-    long countByEvaluatorId(Long evaluatorId);
+    long countByProgramIdAndCanEvaluateTrue(Long programId);
 
-    long countByProgramIdAndStatus(Long programId, com.example.evalhub.entity.AssignmentStatus status);
+    long countByEvaluatorIdAndCanEvaluateTrue(Long evaluatorId);
+
+    long countByEvaluatorIdAndCanViewResultsTrue(Long evaluatorId);
+
+    long countByProgramIdAndStatusAndCanEvaluateTrue(Long programId, AssignmentStatus status);
 }

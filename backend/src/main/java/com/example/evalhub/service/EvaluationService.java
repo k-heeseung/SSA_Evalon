@@ -146,6 +146,17 @@ public class EvaluationService {
 
         return assignments.stream()
                 .map(assignment -> {
+                    Program program = assignment.getProgram();
+                    boolean resultsAvailable = assignment.isCanViewResults() && isResultsOpen(program);
+                    if (!assignment.isCanEvaluate()) {
+                        // 결과 조회 전용 배정: 채점 진행 현황은 없다.
+                        return new EvaluatorAssignmentResponse(
+                                assignment.getId(), program.getId(), program.getTitle(),
+                                program.getEvaluationStart(), program.getEvaluationDeadline(),
+                                assignment.getStatus(), 0, 0, 0, ProgramScheduleResponse.from(program),
+                                false, true, program.getStatus(), resultsAvailable
+                        );
+                    }
                     Set<Long> evaluableTeamIds = findEvaluableTeams(assignment.getProgram().getId()).stream()
                             .map(Team::getId)
                             .collect(Collectors.toSet());
@@ -171,7 +182,11 @@ public class EvaluationService {
                             teamCount,
                             submittedCount,
                             draftCount,
-                            ProgramScheduleResponse.from(assignment.getProgram())
+                            ProgramScheduleResponse.from(assignment.getProgram()),
+                            true,
+                            assignment.isCanViewResults(),
+                            program.getStatus(),
+                            resultsAvailable
                     );
                 })
                 .toList();
@@ -305,7 +320,8 @@ public class EvaluationService {
     @Transactional(readOnly = true)
     public List<TeamEvaluationResult> getEvaluationResults(Long programId) {
         List<Team> teams = findEvaluableTeams(programId);
-        List<EvaluationAssignment> assignments = assignmentRepository.findByProgramIdOrderByIdAsc(programId);
+        // 결과 조회 권한만 가진 배정은 심사위원 열에 넣지 않는다. 넣으면 '미제출 심사위원'으로 잡혀 완료율·평균이 틀어진다.
+        List<EvaluationAssignment> assignments = assignmentRepository.findByProgramIdAndCanEvaluateTrueOrderByIdAsc(programId);
 
         return teams.stream()
                 .map(team -> {
@@ -326,6 +342,38 @@ public class EvaluationService {
                     return new TeamEvaluationResult(team.getId(), team.getDisplayName(), team.getStatus(), team.getBonusScore(), evaluations, BonusScoreResponse.from(team));
                 })
                 .toList();
+    }
+
+    // 결과 조회 권한이 있는 심사위원용. 매니저 '평가 결과' 탭과 같은 데이터를 한 번에 내려준다.
+    // 배정 소유와 권한은 controller의 @assignmentAccess.canViewResults가 이미 확인했다.
+    @Transactional(readOnly = true)
+    public AssignmentResultsResponse getAssignmentResults(Long assignmentId) {
+        Program program = findResultsProgram(assignmentId);
+        List<CriterionResponse> criteria = criterionRepository.findByProgramIdOrderByDisplayOrderAsc(program.getId()).stream()
+                .map(CriterionResponse::from)
+                .toList();
+        return new AssignmentResultsResponse(ProgramResponse.from(program), criteria, getEvaluationResults(program.getId()));
+    }
+
+    // 결과를 열 수 있는 프로그램인지 확인하고 프로그램 id를 돌려준다. (PDF 내보내기와 공유)
+    @Transactional(readOnly = true)
+    public Long findResultsProgramId(Long assignmentId) {
+        return findResultsProgram(assignmentId).getId();
+    }
+
+    private Program findResultsProgram(Long assignmentId) {
+        EvaluationAssignment assignment = assignmentRepository.findById(assignmentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Assignment not found."));
+        Program program = assignment.getProgram();
+        if (!isResultsOpen(program)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "평가가 시작된 뒤 결과를 볼 수 있습니다.");
+        }
+        return program;
+    }
+
+    // 매니저 결과·내보내기 화면과 같은 기준: 평가 진행(ACTIVE) 또는 평가 완료(INACTIVE)
+    private boolean isResultsOpen(Program program) {
+        return program.getStatus() == Status.ACTIVE || program.getStatus() == Status.INACTIVE;
     }
 
     // 배정이 없으면 평가 화면과 저장 API 모두 사용할 수 없다.

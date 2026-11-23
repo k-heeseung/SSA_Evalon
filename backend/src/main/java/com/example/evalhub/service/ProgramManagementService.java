@@ -14,6 +14,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import com.example.evalhub.util.ApplicantFields;
 import com.example.evalhub.util.ProgramTimes;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -93,6 +94,7 @@ public class ProgramManagementService {
         program.updateParticipantType(request.participantType());
         updateBonusItems(program, request.bonusEnabled(), null, request.bonusItems());
         Program saved = programRepository.save(program);
+        saveApplicantFields(saved, request.applicantFields(), true);
 
         saveCriteria(saved, request.criteria());
         saveFormFields(saved, request.formFields());
@@ -143,6 +145,7 @@ public class ProgramManagementService {
         program.updateAttachmentSettings(request.attachmentsEnabled(), request.maxAttachments());
         program.updateParticipantType(request.participantType());
         updateBonusItems(program, request.bonusEnabled(), null, request.bonusItems());
+        saveApplicantFields(program, request.applicantFields(), false);
 
         saveCriteria(program, request.criteria());
         saveFormFields(program, request.formFields());
@@ -278,6 +281,89 @@ public class ProgramManagementService {
     //   - id가 있는 항목: 기존 행을 제자리에서 수정한다 (id 유지 → 답변 보존)
     //   - id가 null인 항목: 새로 추가한다
     //   - 요청에 없는 기존 항목: 삭제한다. 단 답변이 달려 있으면 409로 막는다 (트랜잭션 전체가 롤백된다)
+    private static final int MAX_APPLICANT_FIELDS = 30;
+    private static final int MAX_APPLICANT_FIELD_LABEL = 100;
+
+    // 지원자 인적사항 항목을 id 기준 diff로 저장한다. 배열 순서가 곧 표시 순서다.
+    // requested가 null이면 손대지 않는다. (POST는 예전 고정 항목 방식으로 남고, PUT은 기존 설정을 유지)
+    //
+    // - id가 null인 항목은 새 항목이다. 서버가 id를 붙인다.
+    // - id가 있는 항목은 라벨·순서만 바뀐다. id가 유지되므로 지원자가 입력한 값과의 연결도 유지된다.
+    // - 요청에 없는 기존 항목은 삭제한다. 단 지원자가 이미 값을 입력한 항목이면 409.
+    // - 예전 고정 항목 방식 프로그램은 지원서가 하나도 없을 때만 직접 설정 방식으로 바꿀 수 있다.
+    //   (기존 지원서의 이름·이메일·연락처는 새 항목으로 옮길 수 없기 때문)
+    private void saveApplicantFields(Program program, List<ApplicantField> requested, boolean creating) {
+        if (requested == null) return;
+        List<ApplicantField> existing = ApplicantFields.parse(program.getApplicantFields());
+        if (existing == null && !creating && applicationRepository.existsByProgramId(program.getId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "이미 지원서가 있는 프로그램은 지원자 정보 항목 방식을 바꿀 수 없습니다.");
+        }
+        if (requested.size() > MAX_APPLICANT_FIELDS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "지원자 정보 항목은 최대 " + MAX_APPLICANT_FIELDS + "개까지 추가할 수 있습니다.");
+        }
+
+        Map<String, ApplicantField> existingById = new LinkedHashMap<>();
+        if (existing != null) existing.forEach(f -> existingById.put(f.id(), f));
+
+        List<ApplicantField> result = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
+        Set<String> seenLabels = new HashSet<>();
+        for (ApplicantField item : requested) {
+            String label = item == null || item.label() == null ? "" : item.label().trim();
+            if (label.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원자 정보 항목의 이름을 입력해주세요.");
+            }
+            if (label.length() > MAX_APPLICANT_FIELD_LABEL) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "지원자 정보 항목 이름은 " + MAX_APPLICANT_FIELD_LABEL + "자 이하로 입력해주세요.");
+            }
+            if (program.getParticipantType() == ParticipantType.TEAM && label.replace(" ", "").equals("팀이름")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "팀 이름은 항상 받는 항목이라 따로 추가할 필요가 없습니다.");
+            }
+            if (!seenLabels.add(label.toLowerCase())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원자 정보 항목 이름이 중복됩니다: " + label);
+            }
+            String id = item.id();
+            if (id == null || id.isBlank()) {
+                id = java.util.UUID.randomUUID().toString();
+            } else if (!existingById.containsKey(id)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "이 프로그램에 없는 지원자 정보 항목입니다: " + label);
+            }
+            if (!seenIds.add(id)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 지원자 정보 항목이 두 번 들어 있습니다: " + label);
+            }
+            result.add(new ApplicantField(id, label));
+        }
+
+        List<ApplicantField> removed = existingById.values().stream()
+                .filter(f -> !seenIds.contains(f.id()))
+                .toList();
+        if (!removed.isEmpty()) {
+            List<ApplicantInfo> infos = teamRepository.findByProgramIdOrderByIdAsc(program.getId()).stream()
+                    .map(t -> ApplicantInfo.parse(t.getApplicantInfo()))
+                    .toList();
+            for (ApplicantField field : removed) {
+                if (infos.stream().anyMatch(info -> hasApplicantValue(info, field.id()))) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "지원자가 이미 입력한 항목은 삭제할 수 없습니다: " + field.label());
+                }
+            }
+        }
+        program.updateApplicantFields(ApplicantFields.toJson(result));
+    }
+
+    private static boolean hasApplicantValue(ApplicantInfo info, String fieldId) {
+        if (isNotBlank(info.values().get(fieldId))) return true;
+        return info.members().stream()
+                .anyMatch(m -> m.values() != null && isNotBlank(m.values().get(fieldId)));
+    }
+
+    private static boolean isNotBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
     private void saveFormFields(Program program, List<SaveProgramRequest.FormField> items) {
         Map<Long, ApplicationFormField> existing = new LinkedHashMap<>();
         for (ApplicationFormField field : formFieldRepository.findByProgramIdOrderByDisplayOrderAsc(program.getId())) {
@@ -410,8 +496,9 @@ public class ProgramManagementService {
                 .map(p -> ProgramResponse.from(
                         p,
                         teamRepository.countByProgramId(p.getId()) - draftTeamIds(p.getId()).size(),
-                        assignmentRepository.countByProgramId(p.getId()),
-                        assignmentRepository.countByProgramIdAndStatus(p.getId(), AssignmentStatus.SUBMITTED)
+                        // 결과 조회 권한만 가진 배정은 심사위원 수·평가율에서 뺀다.
+                        assignmentRepository.countByProgramIdAndCanEvaluateTrue(p.getId()),
+                        assignmentRepository.countByProgramIdAndStatusAndCanEvaluateTrue(p.getId(), AssignmentStatus.SUBMITTED)
                 ))
                 .toList();
     }
@@ -825,7 +912,9 @@ public class ProgramManagementService {
     @Transactional(readOnly = true)
     public List<UserResponse> findEvaluators() {
         return userRepository.findByRoleAndDeletedAtIsNull(Role.EVALUATOR).stream()
-                .map(u -> UserResponse.from(u, assignmentRepository.countByEvaluatorId(u.getId())))
+                .map(u -> UserResponse.from(u,
+                        assignmentRepository.countByEvaluatorIdAndCanEvaluateTrue(u.getId()),
+                        assignmentRepository.countByEvaluatorIdAndCanViewResultsTrue(u.getId())))
                 .toList();
     }
 
@@ -854,8 +943,14 @@ public class ProgramManagementService {
         assignmentRepository.findByProgramIdAndEvaluatorId(programId, evaluator.getId()).ifPresent(assignment -> {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Assignment already exists.");
         });
+        boolean canEvaluate = request.evaluatePermission();
+        boolean canViewResults = request.viewResultsPermission();
+        if (!canEvaluate && !canViewResults) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "심사 또는 결과 조회 권한을 하나 이상 선택해주세요.");
+        }
 
-        EvaluationAssignment assignment = assignmentRepository.save(new EvaluationAssignment(program, evaluator));
+        EvaluationAssignment assignment = assignmentRepository.save(
+                new EvaluationAssignment(program, evaluator, canEvaluate, canViewResults));
 
         // 배정이 늘어도 프로그램 상태는 건드리지 않는다.
         // 완료된 프로그램을 다시 열려면 매니저가 평가 마감일을 연장해야 한다. (updateProgram)
@@ -889,6 +984,42 @@ public class ProgramManagementService {
         return assignmentRepository.findByProgramIdOrderByIdAsc(programId).stream()
                 .map(AssignmentResponse::from)
                 .toList();
+    }
+
+    // 배정은 그대로 두고 심사 / 결과 조회 권한만 바꾼다.
+    // 임시저장·제출 기록이 있는 배정에서 심사 권한을 빼면 그 기록이 결과에서 조용히 사라지므로 409로 막는다.
+    // 기록까지 지우려면 배정을 해제한다. (cancelAssignment)
+    @Transactional
+    public AssignmentResponse updateAssignmentPermissions(Long assignmentId, UpdateAssignmentPermissionsRequest request) {
+        if (request == null || request.canEvaluate() == null || request.canViewResults() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "canEvaluate와 canViewResults를 모두 보내주세요.");
+        }
+        boolean canEvaluate = request.canEvaluate();
+        boolean canViewResults = request.canViewResults();
+        if (!canEvaluate && !canViewResults) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "심사 또는 결과 조회 권한을 하나 이상 선택해주세요. 배정을 없애려면 배정을 해제하세요.");
+        }
+        EvaluationAssignment assignment = assignmentRepository.findById(assignmentId)
+                .orElseThrow(() -> notFound("Assignment not found."));
+        entityManager.refresh(assignment.getProgram(), jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        try {
+            entityManager.refresh(assignment, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        } catch (jakarta.persistence.EntityNotFoundException error) {
+            throw notFound("Assignment not found.");
+        }
+        if (assignment.isCanEvaluate() && !canEvaluate) {
+            Long records = entityManager.createQuery(
+                            "select count(s) from EvaluationSubmission s where s.assignment.id = :assignmentId", Long.class)
+                    .setParameter("assignmentId", assignmentId)
+                    .getSingleResult();
+            if (records > 0) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "이미 채점 기록이 있는 심사위원은 심사 권한만 뺄 수 없습니다. 기록까지 지우려면 배정을 해제하세요.");
+            }
+        }
+        assignment.changePermissions(canEvaluate, canViewResults);
+        return AssignmentResponse.from(assignment);
     }
 
     // 제출 여부와 무관하게 배정과 평가 기록을 삭제하고 집계에서 제외한다.

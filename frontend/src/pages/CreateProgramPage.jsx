@@ -11,6 +11,8 @@ import { validBonusScore } from '../utils/bonus';
 import { validCriterionMaxScore, totalCriterionMaxScore } from '../utils/criteria';
 import ProgramScheduleSection from '../components/ProgramScheduleSection';
 import ProgramApplicationPreview from '../components/ProgramApplicationPreview';
+import ApplicantFieldsEditor from '../components/ApplicantFieldsEditor';
+import { DEFAULT_APPLICANT_FIELD_LABELS, toApplicantFieldItems, newApplicantFieldItem } from '../utils/applicantFields';
 import { scheduleInput, scheduleInstant, schedulePayload, scheduleErrors as getScheduleErrors, formatScheduleTime } from '../utils/programSchedule';
 import { useScheduleNow } from '../query/useScheduleNow';
 import { FIELD_TYPES, normalizeFieldType, isOptionType } from '../utils/formFields';
@@ -93,6 +95,10 @@ export default function CreateProgramPage() {
   const [description, setDescription] = useState('');
   const [type, setType] = useState('MODULE_A');
   const [participantType, setParticipantType] = useState('INDIVIDUAL');
+  // 지원자 정보 항목. null이면 예전 고정 항목 방식 프로그램이다. 새 프로그램은 기본 항목을 미리 넣어 둔다.
+  const [applicantFieldItems, setApplicantFieldItems] = useState(
+    () => DEFAULT_APPLICANT_FIELD_LABELS.map((label) => newApplicantFieldItem(label)),
+  );
   const [applicationStart, setApplicationStart] = useState('');
   const [applicationDeadline, setApplicationDeadline] = useState('');
   const [evaluationStart, setEvaluationStart] = useState('');
@@ -143,6 +149,7 @@ export default function CreateProgramPage() {
     setDescription(draft.description || '');
     setType(draft.type || 'MODULE_A');
     setParticipantType(draft.participantType || 'INDIVIDUAL');
+    setApplicantFieldItems(toApplicantFieldItems(draft.applicantFields));
     setApplicationStart(scheduleInput(scheduleInstant(draft, 'applicationStart')));
     setApplicationDeadline(scheduleInput(scheduleInstant(draft, 'applicationDeadline')));
     setEvaluationStart(scheduleInput(scheduleInstant(draft, 'evaluationStart')));
@@ -260,17 +267,34 @@ export default function CreateProgramPage() {
           ? (item.options || []).map((o) => o.trim()).filter(Boolean)
           : [],
       })),
+    // null(예전 고정 항목 방식)이면 보내지 않아 서버가 기존 설정을 유지한다.
+    // 기존 항목은 서버 id를 함께 보내야 라벨·순서를 바꿔도 지원자가 입력한 값이 유지된다.
+    applicantFields: applicantFieldItems == null ? undefined : applicantFieldItems
+      .filter((item) => item.label.trim())
+      .map((item) => ({ id: item.id ?? null, label: item.label.trim() })),
     publish,
   });
 
   // 저장 응답으로 화면 상태와 쿼리 캐시를 맞춘다. 새로 생긴 항목의 id를 채워 재저장 시 중복 생성을 막는다.
   const applySaved = ({ program, criteria, formFields }) => {
-    setOriginalProgram(program);
+    // 저장 응답에는 팀 수가 없으므로(0) 목록에서 받은 값을 유지한다. (항목 방식 전환 가능 여부 판단용)
+    setOriginalProgram((previous) => ({ ...program, teamCount: previous?.teamCount ?? program.teamCount }));
     hydrateBonusItems(program);
+    setApplicantFieldItems(toApplicantFieldItems(program.applicantFields));
     setCriteriaItems(toCriteriaItems(criteria));
     setFormItems(toFormItems(formFields));
     queryClient.setQueryData(queryKeys.criteria(program.id), criteria);
     queryClient.setQueryData(queryKeys.formFields(program.id), formFields);
+    // 저장 직후 이동하는 상세 화면이 다시 불러오기 전의 목록을 보여 주지 않도록 캐시를 바로 맞춘다.
+    // 저장 응답의 팀·심사위원·제출 수는 0이므로 목록에 있던 값을 유지한다.
+    queryClient.setQueryData(queryKeys.programs, (list) => (Array.isArray(list)
+      ? list.map((item) => (item.id === program.id ? {
+        ...program,
+        teamCount: item.teamCount,
+        evaluatorCount: item.evaluatorCount,
+        submittedCount: item.submittedCount,
+      } : item))
+      : list));
     queryClient.invalidateQueries({ queryKey: queryKeys.programs });
   };
 
@@ -647,14 +671,20 @@ export default function CreateProgramPage() {
           </section>
 
           <section className="program-editor-group" aria-labelledby="program-application-heading">
-            <div className="program-editor-heading-row"><h2 id="program-application-heading" className="program-editor-section-title">지원서 구성</h2><ProgramApplicationPreview title={title} participantType={participantType} fields={formItems} attachmentsEnabled={attachmentsEnabled} maxAttachments={maxAttachments} /></div>
+            <div className="program-editor-heading-row"><h2 id="program-application-heading" className="program-editor-section-title">지원서 구성</h2><ProgramApplicationPreview title={title} participantType={participantType} applicantFields={applicantFieldItems} fields={formItems} attachmentsEnabled={attachmentsEnabled} maxAttachments={maxAttachments} /></div>
             <div className="program-editor-surface">
               <div className="program-editor-participant">
                 <h3>지원 방식</h3>
                 <div className="program-editor-choices" role="group" aria-label="지원 방식">
-                  {[{ value: 'INDIVIDUAL', label: '개인 지원', description: '이름·연락처·이메일을 받습니다.' }, { value: 'TEAM', label: '팀 지원', description: '팀 이름과 팀원 정보를 함께 받습니다.' }].map((option) => <label key={option.value} className="program-editor-option"><input type="radio" name="participantType" value={option.value} checked={participantType === option.value} onChange={() => setParticipantType(option.value)} /><span><strong>{option.label}</strong><small>{option.description}</small></span></label>)}
+                  {[{ value: 'INDIVIDUAL', label: '개인 지원', description: '지원자 본인의 정보를 받습니다.' }, { value: 'TEAM', label: '팀 지원', description: '팀 이름과 대표자·팀원별 정보를 받습니다.' }].map((option) => <label key={option.value} className="program-editor-option"><input type="radio" name="participantType" value={option.value} checked={participantType === option.value} onChange={() => setParticipantType(option.value)} /><span><strong>{option.label}</strong><small>{option.description}</small></span></label>)}
                 </div>
-                <p className="program-editor-help">기본 정보: 지원자 이름·연락처·이메일{participantType === 'TEAM' ? ', 팀 이름·팀원 정보' : ''}</p>
+                <ApplicantFieldsEditor
+                  items={applicantFieldItems}
+                  onChange={setApplicantFieldItems}
+                  participantType={participantType}
+                  canSwitchFromLegacy={!(originalProgram?.teamCount > 0)}
+                  onSwitchFromLegacy={setApplicantFieldItems}
+                />
               </div>
           {/* 제출 받을 항목 */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

@@ -26,9 +26,31 @@ public class EvaluationAssignment {
     @Column(nullable = false)
     private AssignmentStatus status = AssignmentStatus.ASSIGNED;
 
+    // 심사 권한: 팀 목록·채점 화면과 첨부 PDF 열람. 결과 집계의 심사위원 열은 이 권한이 있는 배정만 센다.
+    @Column(name = "can_evaluate", nullable = false)
+    private boolean canEvaluate = true;
+
+    // 결과 조회 권한: 프로그램의 평가 결과(매니저 '평가 결과' 탭 내용)를 읽기 전용으로 본다.
+    @Column(name = "can_view_results", nullable = false)
+    private boolean canViewResults = false;
+
     public EvaluationAssignment(Program program, User evaluator) {
+        this(program, evaluator, true, false);
+    }
+
+    public EvaluationAssignment(Program program, User evaluator, boolean canEvaluate, boolean canViewResults) {
         this.program = program;
         this.evaluator = evaluator;
+        changePermissions(canEvaluate, canViewResults);
+    }
+
+    // 둘 다 끄는 것은 배정 해제이므로 여기서는 허용하지 않는다. (DB check 제약과 같은 규칙)
+    public void changePermissions(boolean canEvaluate, boolean canViewResults) {
+        if (!canEvaluate && !canViewResults) {
+            throw new IllegalArgumentException("At least one assignment permission is required.");
+        }
+        this.canEvaluate = canEvaluate;
+        this.canViewResults = canViewResults;
     }
 
     public void markInProgress() {

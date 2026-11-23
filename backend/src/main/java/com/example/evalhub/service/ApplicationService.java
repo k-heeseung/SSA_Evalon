@@ -3,6 +3,7 @@ package com.example.evalhub.service;
 import com.example.evalhub.dto.*;
 import com.example.evalhub.entity.*;
 import com.example.evalhub.repository.*;
+import com.example.evalhub.util.ApplicantFields;
 import com.example.evalhub.util.PhoneNumbers;
 import com.example.evalhub.util.CheckboxAnswers;
 import org.springframework.http.HttpStatus;
@@ -14,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import com.example.evalhub.util.ProgramTimes;
 import com.example.evalhub.util.RequestTimes;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -214,7 +216,7 @@ public class ApplicationService {
         }
         validateTeamInfo(application, request);
         applyParticipantInfo(application, request.teamName(), request.participantName(),
-                request.participantEmail(), request.participantPhone(), request.members());
+                request.participantEmail(), request.participantPhone(), request.members(), request.values());
         application.touch();
         return toDetail(application);
     }
@@ -237,6 +239,13 @@ public class ApplicationService {
 
     // 팀 정보 수정 시 필수 검증. 제출된 지원서가 무효화되지 않도록 팀 지원이면 팀명·팀장 이름을 요구한다.
     private void validateTeamInfo(Application application, UpdateTeamInfoRequest request) {
+        List<ApplicantField> fields = ApplicantFields.parse(application.getProgram().getApplicantFields());
+        if (fields != null) {
+            String error = findCustomParticipantError(application.getProgram(), fields,
+                    request.teamName(), request.values(), request.members());
+            if (error != null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, error);
+            return;
+        }
         ParticipantType pType = application.getProgram().getParticipantType();
         if (pType == ParticipantType.TEAM && trimOrNull(request.teamName()) == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "팀 이름을 입력해주세요.");
@@ -249,6 +258,58 @@ public class ApplicationService {
         if (phoneError != null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, phoneError);
         }
+    }
+
+    // 매니저가 인적사항 항목을 직접 정한 프로그램의 필수 검증. 문제가 없으면 null.
+    // 팀 이름(팀 지원)은 항상 필수이고, 설정된 항목은 모두 단답형·필수다.
+    // 팀 지원이면 대표자와, 한 칸이라도 입력된 팀원 행마다 모든 항목을 채워야 한다. (빈 행은 저장 시 버린다)
+    private String findCustomParticipantError(Program program, List<ApplicantField> fields, String teamName,
+            Map<String, String> values, List<SaveApplicationRequest.MemberInput> memberInputs) {
+        boolean team = program.getParticipantType() == ParticipantType.TEAM;
+        if (team && trimOrNull(teamName) == null) {
+            return "팀 이름을 입력해주세요.";
+        }
+        for (ApplicantField field : fields) {
+            if (trimOrNull(valueOf(values, field.id())) == null) {
+                return team ? "대표자 정보가 비어 있습니다: " + field.label()
+                        : "필수 항목이 비어 있습니다: " + field.label();
+            }
+        }
+        if (!team) return null;
+        List<Map<String, String>> members = memberValues(fields, memberInputs);
+        for (int i = 0; i < members.size(); i++) {
+            for (ApplicantField field : fields) {
+                if (trimOrNull(members.get(i).get(field.id())) == null) {
+                    return "팀원 " + (i + 1) + "의 정보가 비어 있습니다: " + field.label();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String valueOf(Map<String, String> values, String key) {
+        return values == null ? null : values.get(key);
+    }
+
+    // 설정된 항목의 값만 남긴다. 값은 앞뒤 공백을 지우고, 빈 값은 저장하지 않는다.
+    private Map<String, String> pickValues(List<ApplicantField> fields, Map<String, String> values) {
+        Map<String, String> picked = new LinkedHashMap<>();
+        for (ApplicantField field : fields) {
+            String value = trimOrNull(valueOf(values, field.id()));
+            if (value != null) picked.put(field.id(), value);
+        }
+        return picked;
+    }
+
+    // 팀원 행별로 설정된 항목 값만 남기고, 아무것도 입력하지 않은 행은 버린다.
+    private List<Map<String, String>> memberValues(List<ApplicantField> fields,
+            List<SaveApplicationRequest.MemberInput> memberInputs) {
+        if (memberInputs == null) return List.of();
+        return memberInputs.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(m -> pickValues(fields, m.values()))
+                .filter(v -> !v.isEmpty())
+                .toList();
     }
 
     // 전화번호 형식 검증. 값이 비어 있으면 통과시키고(연락처는 선택 항목),
@@ -270,12 +331,19 @@ public class ApplicationService {
 
     // 지원서의 제출 대상 팀에 본인/팀원 정보를 반영한다. 임시저장·제출·팀 정보 수정에서 공유한다.
     private void applyParticipantInfo(Application application, String teamName, String participantName,
-            String participantEmail, String participantPhone, List<SaveApplicationRequest.MemberInput> memberInputs) {
+            String participantEmail, String participantPhone, List<SaveApplicationRequest.MemberInput> memberInputs,
+            Map<String, String> values) {
         Team team = application.getTeam();
         if (team == null) return;
 
         ParticipantType pType = application.getProgram().getParticipantType();
         team.updateParticipantType(pType);
+
+        List<ApplicantField> fields = ApplicantFields.parse(application.getProgram().getApplicantFields());
+        if (fields != null) {
+            applyCustomParticipantInfo(application, team, pType, fields, teamName, values, memberInputs);
+            return;
+        }
 
         // 전화번호는 숫자만 남겨 저장한다. 임시저장 중인 미완성 번호까지 버리지 않도록
         // 여기서는 자릿수를 따지지 않고, 제출·팀 정보 수정 시점에 validatePhones()로 검증한다.
@@ -296,6 +364,28 @@ public class ApplicationService {
         String displayName = pType == ParticipantType.TEAM ? trimOrNull(teamName) : trimOrNull(participantName);
 
         team.applyApplicantInfo(displayName, info.toJson(), phone);
+    }
+
+    // 매니저가 항목을 직접 정한 프로그램: 항목 id별 값만 저장한다.
+    // 예전 방식의 이름·이메일·연락처 칸은 받지 않으므로 저장된 값을 그대로 둔다. (대표 연락처 컬럼도 유지)
+    // 개인 지원은 이름 항목이 따로 없으므로 매니저 목록에 표시할 이름으로 계정 이름을 쓴다.
+    private void applyCustomParticipantInfo(Application application, Team team, ParticipantType pType,
+            List<ApplicantField> fields, String teamName, Map<String, String> values,
+            List<SaveApplicationRequest.MemberInput> memberInputs) {
+        ApplicantInfo stored = ApplicantInfo.of(team);
+        List<ApplicantInfo.Member> members = pType == ParticipantType.TEAM
+                ? memberValues(fields, memberInputs).stream()
+                    .map(v -> new ApplicantInfo.Member(null, null, null, v))
+                    .toList()
+                : List.of();
+        ApplicantInfo info = new ApplicantInfo(stored.name(), stored.email(), stored.phone(), members,
+                pickValues(fields, values));
+
+        User applicant = application.getApplicant();
+        String displayName = pType == ParticipantType.TEAM
+                ? trimOrNull(teamName)
+                : firstNonBlank(applicant.getName(), applicant.getEmail());
+        team.applyApplicantInfo(displayName, info.toJson(), team.getParticipantPhone());
     }
 
     private void validateAnswerFields(Application application, SaveApplicationRequest request) {
@@ -327,7 +417,7 @@ public class ApplicationService {
     // 본인/팀원 정보와 답변을 저장한다. 임시저장·제출에서 공유한다.
     private void applyContent(Application application, SaveApplicationRequest request) {
         applyParticipantInfo(application, request.teamName(), request.participantName(),
-                request.participantEmail(), request.participantPhone(), request.members());
+                request.participantEmail(), request.participantPhone(), request.members(), request.values());
 
         List<SaveApplicationRequest.AnswerInput> inputs = request.answers() == null ? List.of() : request.answers();
         Map<Long, ApplicationAnswer> existing = answerRepository.findByApplicationId(application.getId()).stream()
@@ -373,6 +463,13 @@ public class ApplicationService {
 
     // 제출 시 본인/팀 정보 필수 검증. 팀 지원이면 팀 이름도 필수.
     private void validateParticipant(Application application, SaveApplicationRequest request) {
+        List<ApplicantField> fields = ApplicantFields.parse(application.getProgram().getApplicantFields());
+        if (fields != null) {
+            String error = findCustomParticipantError(application.getProgram(), fields,
+                    request.teamName(), request.values(), request.members());
+            if (error != null) throw new SubmissionValidationException(error);
+            return;
+        }
         ParticipantType pType = application.getProgram().getParticipantType();
         if (pType == ParticipantType.TEAM && trimOrNull(request.teamName()) == null) {
             throw new SubmissionValidationException("팀 이름을 입력해주세요.");
@@ -486,7 +583,8 @@ public class ApplicationService {
                 applicantName,
                 applicantEmail,
                 stored.phone(),
-                stored.members()
+                stored.members(),
+                stored.values()
         );
 
         return new ApplicationDetailResponse(
@@ -504,6 +602,7 @@ public class ApplicationService {
                 program.isAttachmentsEnabled(),
                 program.getMaxAttachments(),
                 program.getParticipantType(),
+                ApplicantFields.parse(program.getApplicantFields()),
                 applicantInfo,
                 fields,
                 attachments,

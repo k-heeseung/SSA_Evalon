@@ -6,6 +6,8 @@ import { useParams, useNavigate, useLocation, useBlocker, useOutletContext } fro
 import { getEvaluationView, saveDraft, submitEvaluation } from '../api/evaluations';
 import { FIELD_TYPE_LABEL, normalizeFieldType, parseCheckboxValue, isFileType } from '../utils/formFields';
 import TeamMemberList from '../components/TeamMemberList';
+import ApplicantValuesView from '../components/ApplicantValuesView';
+import { usesCustomApplicantFields } from '../utils/applicantFields';
 import PdfViewerErrorBoundary from '../components/PdfViewerErrorBoundary';
 import { formatPhone } from '../utils/phone';
 
@@ -17,7 +19,7 @@ import { useScheduleNow } from '../query/useScheduleNow';
 import { formatScheduleTime, scheduleInstant } from '../utils/programSchedule';
 import { evaluationPeriod, scheduleNow } from '../utils/evaluationPeriod';
 
-const LEFT_TABS = ['발표 자료', '지원서 정보', '팀 정보'];
+const LEFT_TABS = ['팀 정보', '지원서 정보', '발표 자료'];
 const AUTOSAVE_DELAY = 3000;
 
 const snapshotOf = (scores, comment) => JSON.stringify({ scores, comment });
@@ -352,6 +354,8 @@ export default function EvaluationPage() {
   const application = view.application;
   const appInfo = application?.applicantInfo || {};
   const isTeamApp = application?.participantType === 'TEAM';
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목(이름·이메일·연락처, 팀원 명단) 방식이다.
+  const isCustomApp = usesCustomApplicantFields(application?.applicantFields);
   const answerFields = (application?.fields || []).filter((f) => !isFileType(f.fieldType));
 
   return (
@@ -446,7 +450,7 @@ export default function EvaluationPage() {
       {/* 본문: 좌우 분할 패널 */}
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row lg:overflow-hidden">
         {/* 왼쪽 패널 - 자료 뷰어 */}
-        <div className={`min-w-0 ${leftTab === 0 ? 'min-h-[28rem]' : 'min-h-0'} lg:min-h-0 lg:flex-1 flex flex-col overflow-hidden border-b lg:border-b-0 lg:border-r border-gray-200`}>
+        <div className={`min-w-0 ${leftTab === 2 ? 'min-h-[28rem]' : 'min-h-0'} lg:min-h-0 lg:flex-1 flex flex-col overflow-hidden border-b lg:border-b-0 lg:border-r border-gray-200`}>
           {/* 탭 바 */}
           <div className="ui-tabs flex-shrink-0 bg-white border-b border-gray-200 flex items-center px-4 min-h-11 overflow-x-auto">
             {LEFT_TABS.map((tab, i) => (
@@ -481,7 +485,7 @@ export default function EvaluationPage() {
 
           {/* 탭 콘텐츠 */}
           <div className="flex-1 overflow-auto bg-gray-100">
-            {leftTab === 0 && (
+            {leftTab === 2 && (
               <div className="h-full flex flex-col">
                 {files.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center">
@@ -592,7 +596,7 @@ export default function EvaluationPage() {
               </div>
             )}
 
-            {leftTab === 2 && (
+            {leftTab === 0 && (
               <div className="p-4 sm:p-6 space-y-4">
                 {/* 지원 개요 */}
                 <div className="ui-card">
@@ -626,7 +630,9 @@ export default function EvaluationPage() {
                 {application ? (
                   <div className="ui-card">
                     <h3 className="text-sm font-semibold text-gray-700 mb-3">{isTeamApp ? '팀 구성원' : '지원자 정보'}</h3>
-                    {isTeamApp ? (
+                    {isCustomApp ? (
+                      <ApplicantValuesView fields={application.applicantFields} info={appInfo} isTeam={isTeamApp} />
+                    ) : isTeamApp ? (
                       <TeamMemberList
                         leaderName={appInfo.name}
                         leaderEmail={appInfo.email}

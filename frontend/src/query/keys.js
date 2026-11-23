@@ -22,6 +22,7 @@ export const queryKeys = {
   evaluationView: (assignmentId, teamId) => [
     'evaluation-assignments', Number(assignmentId), 'teams', Number(teamId), 'view',
   ],
+  assignmentResults: (assignmentId) => ['evaluation-assignments', Number(assignmentId), 'results'],
   evaluationResults: (programId) => ['programs', Number(programId), 'evaluation-results'],
   myApplications: ['applications', 'me'],
   application: (applicationId) => ['applications', Number(applicationId)],

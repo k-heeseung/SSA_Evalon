@@ -82,6 +82,10 @@ public class Program {
     @Column(name = "participant_type", nullable = false)
     private ParticipantType participantType = ParticipantType.INDIVIDUAL;
 
+    // 지원자 인적사항 항목 설정(JSON 배열). null이면 예전 고정 항목 방식을 쓴다. (util/ApplicantFields 참고)
+    @Column(name = "applicant_fields", columnDefinition = "text")
+    private String applicantFields;
+
     // 매니저 단독 가산점 사용 여부. true일 때만 maxBonus와 팀별 가산점이 의미를 가진다.
     @Column(name = "bonus_enabled", nullable = false)
     private boolean bonusEnabled = false;
@@ -145,5 +149,14 @@ public class Program {
 
     public void updateParticipantType(ParticipantType participantType) {
         if (participantType != null) this.participantType = participantType;
+    }
+
+    public void updateApplicantFields(String applicantFieldsJson) {
+        this.applicantFields = applicantFieldsJson;
+    }
+
+    // 매니저가 정한 인적사항 항목을 쓰는 프로그램인지. false면 예전 고정 항목 방식이다.
+    public boolean usesCustomApplicantFields() {
+        return applicantFields != null && !applicantFields.isBlank();
     }
 }

@@ -251,7 +251,13 @@ function AssignmentTab({ programId }) {
                   <tr key={evaluator.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 text-sm font-medium text-gray-800">{evaluator.deleted ? '삭제된 심사위원' : evaluator.email}</td>
                     <td className="px-6 py-4">
-                      <AssignmentStatusBadge status={assignment?.status} />
+                      {/* 결과 조회만 가진 배정은 채점 상태가 없다. 권한 변경은 '심사 배정' 매트릭스에서 한다. */}
+                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                        {assignment?.canEvaluate !== false && <AssignmentStatusBadge status={assignment?.status} />}
+                        {assignment?.canViewResults && (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">결과 조회</span>
+                        )}
+                      </span>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button
@@ -352,25 +358,61 @@ function AssignmentStatusBadge({ status }) {
   );
 }
 
+const DEFAULT_ASSIGN_PERMISSIONS = { canEvaluate: true, canViewResults: false };
+
+// 심사위원별 권한 토글. 심사 = 파랑, 결과 조회 = 보라 (심사위원 생성 모달·배정 매트릭스와 같은 색)
+function AssignPermissionToggle({ label, active, tone, disabled, onClick }) {
+  const on = tone === 'results' ? 'bg-violet-50 text-violet-700 border-violet-300' : 'bg-blue-50 text-blue-700 border-blue-300';
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={`ui-button ui-button--ghost px-2.5 py-1 rounded-md text-xs font-medium border transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+        active ? on : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+      }`}
+    >
+      {active && <span className="mr-1">✓</span>}{label}
+    </button>
+  );
+}
+
 function AssignEvaluatorModal({ evaluators, programId, onClose, onAssigned }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
+  // 심사위원 id → { canEvaluate, canViewResults }. 체크하면 심사만 켜진 상태로 시작한다.
+  const [permissions, setPermissions] = useState({});
   const [error, setError] = useState('');
+  const permissionsOf = (id) => permissions[id] ?? DEFAULT_ASSIGN_PERMISSIONS;
   const createMutation = useMutation({
-    mutationFn: (ids) => Promise.all(ids.map((id) => createAssignment(programId, { evaluatorId: id }))),
+    mutationFn: (ids) => Promise.all(ids.map((id) => createAssignment(programId, { evaluatorId: id, ...permissionsOf(id) }))),
   });
   const submitting = createMutation.isPending;
 
   const toggleEvaluator = (id) => {
+    setError('');
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
+  const togglePermission = (id, key) => {
+    setError('');
+    setPermissions((prev) => {
+      const current = prev[id] ?? DEFAULT_ASSIGN_PERMISSIONS;
+      return { ...prev, [id]: { ...current, [key]: !current[key] } };
+    });
+  };
+  const missingPermission = [...selectedIds].some((id) => {
+    const current = permissionsOf(id);
+    return !current.canEvaluate && !current.canViewResults;
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (selectedIds.size === 0) { setError('심사위원을 한 명 이상 선택해주세요.'); return; }
+    if (missingPermission) { setError('선택한 심사위원마다 심사 또는 결과 조회 권한을 하나 이상 골라 주세요.'); return; }
     try {
       await createMutation.mutateAsync([...selectedIds]);
       onAssigned();
@@ -383,7 +425,7 @@ function AssignEvaluatorModal({ evaluators, programId, onClose, onAssigned }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-xl overflow-hidden">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl overflow-hidden">
         <div className="flex flex-wrap gap-3 items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-base font-semibold text-gray-800">심사위원 배정</h2>
           <button onClick={onClose} className="ui-button ui-button--ghost text-gray-500 hover:text-gray-600 cursor-pointer text-xl leading-none">×</button>
@@ -393,19 +435,38 @@ function AssignEvaluatorModal({ evaluators, programId, onClose, onAssigned }) {
             <label className="block text-sm font-medium text-gray-700 mb-2">
               심사위원 선택 {selectedIds.size > 0 && <span className="text-blue-600 font-normal">({selectedIds.size}명)</span>}
             </label>
-            <div className="border border-gray-200 rounded-lg divide-y divide-gray-50 max-h-60 overflow-y-auto">
-              {evaluators.map((e) => (
-                <label key={e.id} className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(e.id)}
-                    onChange={() => toggleEvaluator(e.id)}
-                    className="w-4 h-4 accent-blue-600"
-                  />
-                  <span className="text-sm text-gray-800">{e.email}</span>
-                </label>
-              ))}
+            <div className="border border-gray-200 rounded-lg divide-y divide-gray-50 max-h-72 overflow-y-auto">
+              {evaluators.length === 0 && <p className="px-4 py-3 text-sm text-gray-500">배정할 수 있는 심사위원이 없습니다.</p>}
+              {evaluators.map((e) => {
+                const selected = selectedIds.has(e.id);
+                const current = permissionsOf(e.id);
+                const none = selected && !current.canEvaluate && !current.canViewResults;
+                return (
+                  <div key={e.id} className={`flex flex-wrap items-center justify-between gap-2 px-4 py-3 ${none ? 'bg-red-50' : 'hover:bg-gray-50'}`}>
+                    <label className="flex items-center gap-3 cursor-pointer min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleEvaluator(e.id)}
+                        className="w-4 h-4 accent-blue-600 flex-shrink-0"
+                      />
+                      <span className="text-sm text-gray-800 break-all">{e.email}</span>
+                    </label>
+                    {selected && (
+                      <span className="flex gap-1.5" role="group" aria-label={`${e.email} 권한`}>
+                        <AssignPermissionToggle label="심사" active={current.canEvaluate} disabled={submitting}
+                          onClick={() => togglePermission(e.id, 'canEvaluate')} />
+                        <AssignPermissionToggle label="결과 조회" tone="results" active={current.canViewResults} disabled={submitting}
+                          onClick={() => togglePermission(e.id, 'canViewResults')} />
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+            <p className="mt-2 text-xs text-gray-500">
+              <span className="text-blue-700">심사</span>는 모든 지원 팀 채점, <span className="text-violet-700">결과 조회</span>는 이 프로그램의 평가 결과 열람(읽기 전용)입니다.
+            </p>
           </div>
           {error && <p className="text-red-500 text-sm">{error}</p>}
           <div className="flex gap-3">

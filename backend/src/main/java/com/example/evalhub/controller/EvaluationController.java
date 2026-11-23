@@ -21,6 +21,10 @@ import java.util.List;
 @PreAuthorize("hasRole('EVALUATOR')")
 public class EvaluationController {
 
+    // 결과 조회 권한만 있는 배정으로는 팀 목록·채점 화면·저장을 쓸 수 없다. (배정 단위 권한: security/AssignmentAccess)
+    static final String EVALUATE_PERMISSION =
+            "hasRole('EVALUATOR') and @assignmentAccess.canEvaluate(#assignmentId, principal)";
+
     private final EvaluationService evaluationService;
 
     public EvaluationController(EvaluationService evaluationService) {
@@ -37,6 +41,7 @@ public class EvaluationController {
 
     @Operation(summary = "평가자 팀 목록 조회", description = "배정된 프로그램의 모든 팀과 각 팀에 대한 본인 채점 상태(미평가/임시저장/제출)를 반환합니다.")
     @GetMapping("/{assignmentId}/teams")
+    @PreAuthorize(EVALUATE_PERMISSION)
     public List<EvaluationTeamStatusResponse> getAssignmentTeams(
             @PathVariable Long assignmentId,
             @AuthenticationPrincipal AuthenticatedUser user
@@ -46,6 +51,7 @@ public class EvaluationController {
 
     @Operation(summary = "평가 화면 조회", description = "프로그램, 평가 대상 팀, 평가 질문, PDF 목록, 기존 임시저장/제출 내용을 조회합니다.")
     @GetMapping("/{assignmentId}/teams/{teamId}")
+    @PreAuthorize(EVALUATE_PERMISSION)
     public EvaluationViewResponse getEvaluationView(
             @PathVariable Long assignmentId,
             @PathVariable Long teamId,
@@ -56,6 +62,7 @@ public class EvaluationController {
 
     @Operation(summary = "평가 임시저장", description = "일부 질문만 채점되어도 임시저장할 수 있습니다.")
     @PutMapping("/{assignmentId}/teams/{teamId}/draft")
+    @PreAuthorize(EVALUATE_PERMISSION)
     public EvaluationSubmissionResponse saveDraft(
             @PathVariable Long assignmentId,
             @PathVariable Long teamId,
@@ -67,6 +74,7 @@ public class EvaluationController {
 
     @Operation(summary = "평가 제출", description = "모든 평가 질문에 0~10점 점수가 있어야 최종 제출됩니다.")
     @PostMapping("/{assignmentId}/teams/{teamId}/submit")
+    @PreAuthorize(EVALUATE_PERMISSION)
     public EvaluationSubmissionResponse submit(
             @PathVariable Long assignmentId,
             @PathVariable Long teamId,

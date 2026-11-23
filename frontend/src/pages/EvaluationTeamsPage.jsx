@@ -75,6 +75,20 @@ export default function EvaluationTeamsPage() {
       </div>
     );
 
+  // 결과 조회 권한만 있는 배정의 채점 URL로 직접 들어온 경우 (API는 403)
+  if (assignment && assignment.canEvaluate === false)
+    return (
+      <div className="h-full overflow-auto flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-gray-700">이 프로그램은 결과 조회 권한만 있어 심사 화면을 열 수 없습니다.</p>
+        <button
+          onClick={() => navigate(assignment.resultsAvailable ? `/evaluator/results/${assignment.id}` : '/evaluator/results')}
+          className="ui-button ui-button--primary px-4 py-2 bg-violet-600 text-white rounded-lg text-sm cursor-pointer"
+        >
+          결과 조회로 이동
+        </button>
+      </div>
+    );
+
   if (error)
     return (
       <div className="h-full overflow-auto flex flex-col items-center justify-center gap-4">

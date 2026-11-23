@@ -10,7 +10,9 @@ public record AssignmentResponse(
         String evaluatorEmail,
         AssignmentStatus status,
         String evaluatorName,
-        boolean evaluatorDeleted
+        boolean evaluatorDeleted,
+        boolean canEvaluate,
+        boolean canViewResults
 ) {
 
     public static AssignmentResponse from(EvaluationAssignment assignment) {
@@ -21,7 +23,9 @@ public record AssignmentResponse(
                 assignment.getEvaluator().getDisplayEmail(),
                 assignment.getStatus(),
                 assignment.getEvaluator().getDisplayName(),
-                assignment.getEvaluator().isDeleted()
+                assignment.getEvaluator().isDeleted(),
+                assignment.isCanEvaluate(),
+                assignment.isCanViewResults()
         );
     }
 }

@@ -18,7 +18,10 @@ import './ProgramResultsPanel.css';
 const FILTERS = [{ key: 'ALL', label: '전체' }, ...['PASSED', 'FAILED', 'PENDING'].map(key => ({ key, label: RESULT_STATUS[key].label }))];
 const fmt = (value) => value == null ? '—' : Number(value).toFixed(1);
 
-export default function ProgramResultsPanel({ programId, program }) {
+// 매니저 프로그램 상세의 '평가 결과' 탭. 결과 조회 권한 심사위원 화면(EvaluatorResultsPage)도 같은 컴포넌트를 쓴다.
+// source를 넘기면 매니저 API 대신 그 쿼리(resultsQuery / criteriaQuery)와 PDF 다운로드(downloadPdf)를 쓰고,
+// readOnly면 최종 판정 변경과 팀 정보(지원서·첨부) 이동을 숨긴다.
+export default function ProgramResultsPanel({ programId, program, source = null, readOnly = false }) {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -29,8 +32,10 @@ export default function ProgramResultsPanel({ programId, program }) {
   const [exportPending, setExportPending] = useState(false);
   const [exportError, setExportError] = useState('');
   const [message, setMessage] = useState('');
-  const resultsQuery = useLiveApiQuery(queryKeys.evaluationResults(programId), () => getEvaluationResults(programId));
-  const criteriaQuery = useLiveApiQuery(queryKeys.criteria(programId), () => getCriteria(programId));
+  const managerResultsQuery = useLiveApiQuery(queryKeys.evaluationResults(programId), () => getEvaluationResults(programId), { enabled: !source });
+  const managerCriteriaQuery = useLiveApiQuery(queryKeys.criteria(programId), () => getCriteria(programId), { enabled: !source });
+  const resultsQuery = source?.resultsQuery ?? managerResultsQuery;
+  const criteriaQuery = source?.criteriaQuery ?? managerCriteriaQuery;
   const results = resultsQuery.data ?? [];
   const ranked = rankedTeams(results, method);
   const filtered = filter === 'ALL' ? ranked : ranked.filter(team => team.teamStatus === filter);
@@ -99,7 +104,7 @@ export default function ProgramResultsPanel({ programId, program }) {
     try {
       const title = program?.title || '평가 결과';
       if (format === 'pdf') {
-        const response = await getEvaluationResultsPdf(programId, passedOnly, method);
+        const response = source ? await source.downloadPdf(passedOnly, method) : await getEvaluationResultsPdf(programId, passedOnly, method);
         await downloadPdfResponse(response, `${title}_${RESULT_METHODS[method]}_${passedOnly ? '최종합격' : '상세평가'}.pdf`);
       } else await (passedOnly ? exportFinalExcel : exportAllTeamsExcel)(title, results, method);
     } catch { setExportError('파일을 내보내지 못했습니다. 잠시 후 다시 시도해주세요.'); }
@@ -118,7 +123,7 @@ export default function ProgramResultsPanel({ programId, program }) {
 
   if (resultsQuery.isPending) return <p className="program-results-message" role="status">평가 결과를 불러오는 중입니다…</p>;
   if (resultsQuery.isError && !resultsQuery.data) return <div className="program-results-message" role="alert"><p>평가 결과를 불러오지 못했습니다.</p><Button onClick={() => resultsQuery.refetch()}>다시 시도</Button></div>;
-  if (!results.length) return <p className="program-results-message">등록된 팀이 없습니다. 지원 팀 탭에서 팀을 확인해주세요.</p>;
+  if (!results.length) return <p className="program-results-message">{readOnly ? '평가 대상 팀이 없습니다.' : '등록된 팀이 없습니다. 지원 팀 탭에서 팀을 확인해주세요.'}</p>;
 
   return <div className="program-results">
     <div className="program-results-method-row">
@@ -203,7 +208,7 @@ export default function ProgramResultsPanel({ programId, program }) {
     </div>
     </>}
     {selected && <EvaluationResultDialog key={selected.teamId} team={selected} method={method} hasBonus={hasBonus}
-      criteriaQuery={criteriaQuery} pending={statusMutation.isPending} nextTeam={nextTeam} message={message}
+      criteriaQuery={criteriaQuery} pending={statusMutation.isPending} nextTeam={nextTeam} message={message} readOnly={readOnly}
       onClose={() => updateParams({ resultTeam: null })} onSave={saveVerdict} onOpenTeam={goToTeamInfo} />}
   </div>;
 }

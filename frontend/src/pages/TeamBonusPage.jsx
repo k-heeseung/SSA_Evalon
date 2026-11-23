@@ -9,6 +9,8 @@ import { FIELD_TYPE_LABEL, normalizeFieldType, isFileType, parseCheckboxValue } 
 import { teamAverage } from '../utils/export';
 import { bonusSummary, validBonusScore } from '../utils/bonus';
 import TeamMemberList from '../components/TeamMemberList';
+import ApplicantValuesView from '../components/ApplicantValuesView';
+import { usesCustomApplicantFields } from '../utils/applicantFields';
 import BreadcrumbTrail from '../components/BreadcrumbTrail';
 import { formatPhone } from '../utils/phone';
 import { queryKeys } from '../query/keys';
@@ -56,6 +58,8 @@ export default function TeamBonusPage() {
   const application = applicationQuery.data ?? null;
   const appInfo = application?.applicantInfo || currentTeam?.applicantInfo || {};
   const isTeamApp = (application?.participantType ?? currentTeam?.participantType) === 'TEAM';
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목 방식이다.
+  const isCustomApp = usesCustomApplicantFields(application?.applicantFields);
   const answerFields = (application?.fields || []).filter((f) => !isFileType(f.fieldType));
   const files = attachmentsQuery.data ?? [];
   const activePdfIndex = Math.min(pdfIndex, Math.max(0, files.length - 1));
@@ -303,7 +307,9 @@ export default function TeamBonusPage() {
 
                 <div className="ui-card bg-white rounded-xl border border-gray-200 p-5">
                   <h3 className="text-sm font-semibold text-gray-700 mb-3">{isTeamApp ? '팀 구성원' : '지원자 정보'}</h3>
-                  {isTeamApp ? (
+                  {isCustomApp ? (
+                    <ApplicantValuesView fields={application.applicantFields} info={appInfo} isTeam={isTeamApp} />
+                  ) : isTeamApp ? (
                     <TeamMemberList
                       leaderName={appInfo.name}
                       leaderEmail={appInfo.email}

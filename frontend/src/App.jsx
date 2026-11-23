@@ -10,6 +10,8 @@ import EvaluatorsPage from './pages/EvaluatorsPage';
 import ManagersPage from './pages/ManagersPage';
 import AssignmentsPage from './pages/AssignmentsPage';
 import EvaluatorDashboardPage from './pages/EvaluatorDashboardPage';
+import EvaluatorResultsPage from './pages/EvaluatorResultsPage';
+import EvaluatorResultDetailPage from './pages/EvaluatorResultDetailPage';
 import EvaluationTeamsPage from './pages/EvaluationTeamsPage';
 import EvaluationPage from './pages/EvaluationPage';
 import CreateProgramPage from './pages/CreateProgramPage';
@@ -62,6 +64,8 @@ const router = createBrowserRouter(createRoutesFromElements(
           <Route path="settings" element={<SettingsPage />} />
           <Route path="evaluate/:assignmentId/teams" element={<EvaluationTeamsPage />} />
           <Route path="evaluate/:assignmentId/teams/:teamId" element={<EvaluationPage />} />
+          <Route path="results" element={<EvaluatorResultsPage />} />
+          <Route path="results/:assignmentId" element={<EvaluatorResultDetailPage />} />
         </Route>
 
         {/* 지원자 */}

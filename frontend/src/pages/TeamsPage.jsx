@@ -213,7 +213,9 @@ export default function TeamsPage() {
                     <tbody className="divide-y divide-gray-50">
                       {program.teams.map((team) => {
                         const s = TEAM_STATUS[team.status] || TEAM_STATUS.PENDING;
-                        const hasSub = team.submissionCount > 0 || Boolean(team.applicantInfo?.name);
+                        // 직접 정한 지원자 정보 항목을 쓰는 프로그램은 이름 대신 항목 값(values)이 저장된다.
+                        const hasSub = team.submissionCount > 0 || Boolean(team.applicantInfo?.name)
+                          || Object.keys(team.applicantInfo?.values ?? {}).length > 0;
                         return (
                           <tr
                             key={team.teamId}

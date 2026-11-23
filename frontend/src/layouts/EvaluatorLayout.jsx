@@ -3,6 +3,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { logout } from '../api/auth';
 import useCurrentUser from '../query/useCurrentUser';
+import { getEvaluatorAssignments } from '../api/evaluations';
+import { queryKeys } from '../query/keys';
+import { useLiveApiQuery } from '../query/useApiQuery';
 import './RoleLayouts.css';
 
 const SettingsIcon = () => (
@@ -23,6 +26,17 @@ const ChevronIcon = ({ className = '' }) => (
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
   </svg>
 );
+const ChartIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 20V10m6 10V4m6 16v-7m4 7H3" />
+  </svg>
+);
+const navClass = (tone) => ({ isActive }) =>
+  `flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors ${
+    isActive
+      ? (tone === 'results' ? 'bg-violet-50 text-violet-700' : 'bg-blue-50 text-blue-700')
+      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+  }`;
 const LogoutIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -32,6 +46,11 @@ export default function EvaluatorLayout() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: user = {} } = useCurrentUser();
+  // 배정 권한에 따라 메뉴 그룹을 보여 준다. 대시보드와 같은 쿼리 키라 요청이 늘지 않는다.
+  const { data: assignments } = useLiveApiQuery(queryKeys.evaluatorAssignments, () => getEvaluatorAssignments());
+  const resultCount = (assignments ?? []).filter((assignment) => assignment.canViewResults).length;
+  // 불러오기 전이나 배정이 하나도 없을 때는 지금처럼 '심사' 메뉴를 보여 준다.
+  const showReview = !assignments || assignments.length === 0 || assignments.some((assignment) => assignment.canEvaluate !== false);
   const logoutMutation = useMutation({ mutationFn: logout, meta: { skipInvalidation: true } });
   const initials = (user.email || 'E').charAt(0).toUpperCase();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -117,24 +136,34 @@ export default function EvaluatorLayout() {
         </div>
 
         <nav className="flex-1 overflow-y-auto py-4 px-3">
+          {showReview && <>
           <p className="evaluator-nav-caption text-xs font-semibold text-gray-500 uppercase tracking-wider px-2 mb-1.5">심사</p>
           <div className="space-y-0.5">
             <NavLink
               to="/evaluator" aria-label="내 심사" title="내 심사"
               onClick={() => { setMobileNavOpen(false); setMenuOpen(false); }}
               end
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                }`
-              }
+              className={navClass('review')}
             >
               <ClipboardIcon />
               <span className="evaluator-nav-label">내 심사</span>
             </NavLink>
           </div>
+          </>}
+          {resultCount > 0 && <>
+          <p className={`evaluator-nav-caption text-xs font-semibold text-gray-500 uppercase tracking-wider px-2 mb-1.5 ${showReview ? 'mt-4' : ''}`}>결과</p>
+          <div className="space-y-0.5">
+            <NavLink
+              to="/evaluator/results" aria-label="결과 조회" title="결과 조회"
+              onClick={() => { setMobileNavOpen(false); setMenuOpen(false); }}
+              className={navClass('results')}
+            >
+              <ChartIcon />
+              <span className="evaluator-nav-label flex-1">결과 조회</span>
+              <span className="evaluator-nav-label text-xs text-gray-500">{resultCount}</span>
+            </NavLink>
+          </div>
+          </>}
         </nav>
 
         <div className="evaluator-sidebar-account px-3 py-3 border-t border-gray-100">

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { getEvaluatorAssignments } from '../api/evaluations';
 import { getSessionUser } from '../api/auth';
 import { queryKeys } from '../query/keys';
@@ -34,10 +34,14 @@ const STATUS_CONFIG = {
 export default function EvaluatorDashboardPage() {
   const navigate = useNavigate();
   const now = useScheduleNow();
-  const { data: assignments = [], isPending: loading, isError, dataUpdatedAt } = useLiveApiQuery(
+  const { data: allAssignments = [], isPending: loading, isError, dataUpdatedAt } = useLiveApiQuery(
     queryKeys.evaluatorAssignments,
     () => getEvaluatorAssignments(),
   );
+  // 대시보드는 심사 권한이 있는 배정만 다룬다. 결과 조회만 가진 배정은 '결과 조회' 메뉴(EvaluatorResultsPage)에 나온다.
+  const assignments = allAssignments.filter((assignment) => assignment.canEvaluate !== false);
+  const resultsOnly = !loading && !isError && assignments.length === 0
+    && allAssignments.some((assignment) => assignment.canViewResults);
   const { data: user = {} } = useLiveApiQuery(queryKeys.currentUser, () => getSessionUser(), {
     staleTime: 5 * 60_000,
     refetchInterval: false,
@@ -59,6 +63,8 @@ export default function EvaluatorDashboardPage() {
         <p className="text-gray-500">로딩 중...</p>
       </div>
     );
+
+  if (resultsOnly) return <Navigate to="/evaluator/results" replace />;
 
   if (error)
     return (
@@ -165,6 +171,8 @@ export default function EvaluatorDashboardPage() {
                     programTitle={assignment.programTitle}
                     config={config}
                     period={evaluationPeriod(assignment, scheduleNow(assignment.schedule, dataUpdatedAt, now))}
+                    onViewResults={assignment.canViewResults && assignment.resultsAvailable
+                      ? () => navigate(`/evaluator/results/${assignment.id}`) : null}
                     onEvaluate={() =>
                       navigate(`/evaluator/evaluate/${assignment.id}/teams`, {
                         state: {
@@ -186,7 +194,7 @@ export default function EvaluatorDashboardPage() {
   );
 }
 
-function AssignmentCard({ assignment, programTitle, config, onEvaluate, period }) {
+function AssignmentCard({ assignment, programTitle, config, onEvaluate, onViewResults, period }) {
   const periodText = formatProgramPeriod(assignment, 'evaluation');
 
   return (
@@ -199,6 +207,9 @@ function AssignmentCard({ assignment, programTitle, config, onEvaluate, period }
             {config.label}
           </span>
         </div>
+        {assignment.canViewResults && (
+          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200">결과 조회</span>
+        )}
       </div>
 
       <p className="text-xs text-gray-500 mb-2">{period.label}</p>
@@ -240,15 +251,25 @@ function AssignmentCard({ assignment, programTitle, config, onEvaluate, period }
       </div>
 
       {/* 액션 버튼 */}
+      <div className="flex gap-2">
+      {onViewResults && (
+        <button
+          onClick={onViewResults}
+          className="min-h-11 px-3 py-2.5 rounded-lg text-sm font-medium border border-violet-200 text-violet-700 hover:bg-violet-50 transition-colors cursor-pointer"
+        >
+          결과 보기
+        </button>
+      )}
       <button
         onClick={onEvaluate}
-        className={`min-h-11 w-full py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${config.actionStyle}`}
+        className={`min-h-11 flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${config.actionStyle}`}
       >
         {period.canEvaluate ? config.action : '자료·심사 보기'}
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
       </button>
+      </div>
     </div>
   );
 }

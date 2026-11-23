@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useMutation, useQueries } from '@tanstack/react-query';
-import { getPrograms, getAssignmentsByProgram, createAssignment, cancelAssignment } from '../api/programs';
+import { getPrograms, getAssignmentsByProgram, createAssignment, cancelAssignment, updateAssignmentPermissions } from '../api/programs';
 import { getEvaluators } from '../api/evaluators';
 import PageHeader from '../components/PageHeader';
 import { queryKeys } from '../query/keys';
@@ -146,52 +146,94 @@ function computeRebalanceSuggestions(programs, evaluators, effectiveMap) {
   return suggestions;
 }
 
-// pendingAction: undefined(확정) | 'add'(대기 추가) | 'remove'(대기 해제)
-function AssignCell({ checked, disabled, pendingAction, onChange }) {
-  const isPendingAdd    = pendingAction === 'add';
-  const isPendingRemove = pendingAction === 'remove';
+const NO_PERMISSIONS = { canEvaluate: false, canViewResults: false };
+const samePermissions = (a, b) => !!a && !!b && a.canEvaluate === b.canEvaluate && a.canViewResults === b.canViewResults;
+const permissionLabel = (p) => [p.canEvaluate && '심사', p.canViewResults && '결과 조회'].filter(Boolean).join(' · ');
 
-  let cls = 'inline-flex shrink-0 items-center justify-center w-6 h-6 rounded-md border-2 transition-all duration-150 ';
-  if (disabled) {
-    cls += checked ? 'bg-gray-300 border-gray-300 cursor-not-allowed' : 'border-gray-200 bg-gray-50 cursor-not-allowed';
-  } else if (isPendingAdd) {
-    cls += 'bg-amber-400 border-amber-400 hover:bg-amber-500 hover:border-amber-500 cursor-pointer';
-  } else if (isPendingRemove) {
-    cls += 'bg-white border-red-400 hover:border-red-500 cursor-pointer';
-  } else if (checked) {
-    cls += 'bg-blue-600 border-blue-600 hover:bg-blue-700 hover:border-blue-700 cursor-pointer';
-  } else {
-    cls += 'border-gray-300 bg-white hover:border-blue-400 cursor-pointer';
-  }
+// 배정 셀. 심사 = 파랑 '심', 결과 조회 = 보라 '결'. 누르면 두 권한을 고르는 팝오버가 열린다.
+// pendingAction: undefined(확정) | 'add'(대기 추가) | 'change'(대기 권한 변경) | 'remove'(대기 해제)
+function AssignCell({ permissions, disabled, pendingAction, open, onOpen, onClose, onChange, onRevert, label }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = (event) => { if (ref.current && !ref.current.contains(event.target)) onClose(); };
+    const escape = (event) => { if (event.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open, onClose]);
+
+  const current = permissions ?? NO_PERMISSIONS;
+  const assigned = current.canEvaluate || current.canViewResults;
+  const pending = !!pendingAction;
+  const badge = (color) => {
+    if (disabled) return 'bg-gray-300 border-gray-300 text-white';
+    return color === 'blue' ? 'bg-blue-600 border-blue-600 text-white' : 'bg-violet-600 border-violet-600 text-white';
+  };
+  const marker = pending ? ' border-dashed ring-2 ring-amber-300' : '';
+  const status = pendingAction === 'remove' ? '해제 대기' : pendingAction === 'add' ? '추가 대기'
+    : pendingAction === 'change' ? '권한 변경 대기' : assigned ? permissionLabel(current) : '미배정';
 
   return (
-    <button
-      type="button"
-      onClick={onChange}
-      disabled={disabled}
-      aria-pressed={!isPendingRemove && (checked || isPendingAdd)}
-      aria-label={isPendingRemove ? '배정 해제 대기' : isPendingAdd ? '배정 추가 대기' : checked ? '배정됨' : '미배정'}
-      title={disabled ? '삭제되었거나 비활성인 심사위원은 새로 배정할 수 없습니다.' : undefined}
-      className="ui-button ui-button--ghost inline-flex min-h-11 min-w-11 items-center justify-center p-0"
-    >
-      <span aria-hidden="true" className={cls}>
-      {isPendingRemove ? (
-        <svg className="w-3 h-3 shrink-0 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      ) : (checked || isPendingAdd) ? (
-        <svg className="w-3 h-3 shrink-0 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-        </svg>
-      ) : null}
-      </span>
-    </button>
+    <div ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        onClick={open ? onClose : onOpen}
+        disabled={disabled}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`${label}: ${status}`}
+        title={disabled ? '삭제되었거나 비활성인 심사위원은 새로 배정할 수 없습니다.' : status}
+        className="ui-button ui-button--ghost inline-flex min-h-11 min-w-11 items-center justify-center gap-0.5 p-0"
+      >
+        {pendingAction === 'remove' ? (
+          <span aria-hidden="true" className="inline-flex w-6 h-6 items-center justify-center rounded-md border-2 border-red-400 bg-white">
+            <svg className="w-3 h-3 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </span>
+        ) : assigned ? (
+          <>
+            {current.canEvaluate && <span aria-hidden="true" className={`inline-flex w-6 h-6 items-center justify-center rounded-md border-2 text-[11px] font-bold ${badge('blue')}${marker}`}>심</span>}
+            {current.canViewResults && <span aria-hidden="true" className={`inline-flex w-6 h-6 items-center justify-center rounded-md border-2 text-[11px] font-bold ${badge('violet')}${marker}`}>결</span>}
+          </>
+        ) : (
+          <span aria-hidden="true" className={`inline-flex w-6 h-6 rounded-md border-2 ${disabled ? 'border-gray-200 bg-gray-50' : 'border-gray-300 bg-white hover:border-blue-400'}`} />
+        )}
+      </button>
+      {open && (
+        <div role="dialog" aria-label={`${label} 권한`} className="absolute z-20 top-full left-1/2 -translate-x-1/2 mt-1 w-48 rounded-xl border border-gray-200 bg-white p-3 text-left shadow-lg">
+          <p className="text-xs font-semibold text-gray-700 mb-2 break-words">{label}</p>
+          <label className="flex items-center gap-2 py-1 text-sm text-gray-700 cursor-pointer">
+            <input type="checkbox" className="accent-blue-600" checked={current.canEvaluate}
+              onChange={() => onChange({ ...current, canEvaluate: !current.canEvaluate })} />
+            심사
+          </label>
+          <label className="flex items-center gap-2 py-1 text-sm text-gray-700 cursor-pointer">
+            <input type="checkbox" className="accent-violet-600" checked={current.canViewResults}
+              onChange={() => onChange({ ...current, canViewResults: !current.canViewResults })} />
+            결과 조회
+          </label>
+          <p className="mt-1 text-[11px] leading-snug text-gray-500">둘 다 끄면 배정 해제로 처리합니다. ‘배정 확정’을 눌러야 저장됩니다.</p>
+          {pending && (
+            <button type="button" onClick={onRevert} className="ui-button ui-button--ghost mt-2 w-full rounded-lg border border-gray-200 py-1 text-xs text-gray-600 hover:bg-gray-50">
+              변경 되돌리기
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
 export default function AssignmentsPage() {
-  // 로컬 대기 변경: { [programId]: { [evaluatorId]: 'add' | 'remove' } }
+  // 로컬 대기 변경: { [programId]: { [evaluatorId]: 'remove' | { canEvaluate, canViewResults } } }
+  // 객체는 확정 후 갖게 될 권한이다. 서버에 배정이 없으면 추가, 있으면 권한 변경으로 처리한다.
   const [pendingMap, setPendingMap] = useState({});
+  const [openCell, setOpenCell] = useState(null);
   const activeTab = 'all';
   const [smartModal, setSmartModal] = useState(null);
   const programsQuery = useLiveApiQuery(queryKeys.programs, () => getPrograms());
@@ -224,6 +266,8 @@ export default function AssignmentsPage() {
           map[program.id][assignment.evaluatorId] = {
             id: assignment.id,
             status: assignment.status,
+            canEvaluate: assignment.canEvaluate ?? true,
+            canViewResults: assignment.canViewResults ?? false,
           };
         }
       });
@@ -238,38 +282,56 @@ export default function AssignmentsPage() {
     const result = {};
     programs.forEach((p) => {
       result[p.id] = { ...(assignmentMap[p.id] ?? {}) };
-      Object.entries(pendingMap[p.id] ?? {}).forEach(([evId, action]) => {
-        if (action === 'add') {
-          result[p.id][evId] = { id: null, status: 'PENDING' };
-        } else {
+      Object.entries(pendingMap[p.id] ?? {}).forEach(([evId, target]) => {
+        if (target === 'remove') {
           delete result[p.id][evId];
+        } else {
+          const server = result[p.id][evId];
+          result[p.id][evId] = { id: server?.id ?? null, status: server?.status ?? 'PENDING', ...target };
         }
       });
     });
     return result;
   }, [programs, assignmentMap, pendingMap]);
 
-  // 체크박스 클릭 → pendingMap만 업데이트 (API 호출 없음)
-  const toggleAssignment = (programId, evaluatorId) => {
+  // 심사 권한이 있는 배정만 담은 맵. 합계·부담·스마트 배정은 심사 기준으로 센다.
+  const evaluateMap = useMemo(() => Object.fromEntries(programs.map((p) => [
+    p.id,
+    Object.fromEntries(Object.entries(effectiveMap[p.id] ?? {}).filter(([, a]) => a.canEvaluate)),
+  ])), [programs, effectiveMap]);
+
+  const pendingActionOf = (programId, evaluatorId) => {
+    const target = pendingMap[programId]?.[evaluatorId];
+    if (target === undefined) return undefined;
+    if (target === 'remove') return 'remove';
+    return assignmentMap[programId]?.[evaluatorId] ? 'change' : 'add';
+  };
+
+  // 팝오버에서 권한을 고름 → pendingMap만 업데이트 (API 호출 없음)
+  const setCellPermissions = (programId, evaluatorId, next) => {
     const serverAssignment = assignmentMap[programId]?.[evaluatorId];
     const evaluator = evaluators.find((ev) => ev.id === evaluatorId);
     if (!serverAssignment && (evaluator?.deleted || evaluator?.status === 'INACTIVE')) return;
+    const none = !next.canEvaluate && !next.canViewResults;
 
     setPendingMap((prev) => {
       const programPending = { ...(prev[programId] ?? {}) };
-      const currentPending = programPending[evaluatorId];
-
-      if (currentPending) {
-        // 이미 대기 중인 변경을 취소(토글)
+      if (none) {
+        if (serverAssignment) programPending[evaluatorId] = 'remove';
+        else delete programPending[evaluatorId];
+      } else if (samePermissions(serverAssignment, next)) {
         delete programPending[evaluatorId];
-      } else if (serverAssignment) {
-        // 서버에 존재 → 해제 대기
-        programPending[evaluatorId] = 'remove';
       } else {
-        // 서버에 없음 → 추가 대기
-        programPending[evaluatorId] = 'add';
+        programPending[evaluatorId] = { canEvaluate: next.canEvaluate, canViewResults: next.canViewResults };
       }
+      return { ...prev, [programId]: programPending };
+    });
+  };
 
+  const revertCell = (programId, evaluatorId) => {
+    setPendingMap((prev) => {
+      const programPending = { ...(prev[programId] ?? {}) };
+      delete programPending[evaluatorId];
       return { ...prev, [programId]: programPending };
     });
   };
@@ -282,13 +344,15 @@ export default function AssignmentsPage() {
     mutationFn: async () => {
       for (const [programIdStr, changes] of Object.entries(pendingMap)) {
         const programId = Number(programIdStr);
-        for (const [evaluatorIdStr, action] of Object.entries(changes)) {
+        for (const [evaluatorIdStr, target] of Object.entries(changes)) {
           const evaluatorId = Number(evaluatorIdStr);
-          if (action === 'remove') {
-            const assignment = assignmentMap[programId]?.[evaluatorId];
+          const assignment = assignmentMap[programId]?.[evaluatorId];
+          if (target === 'remove') {
             if (assignment) await cancelAssignment(assignment.id);
+          } else if (assignment) {
+            await updateAssignmentPermissions(assignment.id, target);
           } else {
-            await createAssignment(programId, { evaluatorId });
+            await createAssignment(programId, { evaluatorId, ...target });
           }
         }
       }
@@ -299,13 +363,15 @@ export default function AssignmentsPage() {
   // 배정 확정: pendingMap을 일괄 API 적용
   const confirmAssignments = async () => {
     if (!hasPendingChanges) return;
-    const removals = Object.values(pendingMap).reduce((sum, changes) => sum + Object.values(changes).filter((action) => action === 'remove').length, 0);
+    const removals = Object.values(pendingMap).reduce((sum, changes) => sum + Object.values(changes).filter((target) => target === 'remove').length, 0);
     if (removals && !window.confirm(`${removals}건의 배정과 해당 평가 기록을 삭제합니다. 복구할 수 없으며, 기존 평가는 결과에서 제외되고 평균·순위가 변경될 수 있습니다.`)) return;
+    setOpenCell(null);
     try {
       await applyMutation.mutateAsync();
       setPendingMap({});
-    } catch {
-      alert('배정 변경에 실패했습니다. 다시 시도해주세요.');
+    } catch (error) {
+      // 409: 채점 기록이 있는 배정에서 심사 권한만 빼려는 경우 등. 서버 안내 문구를 그대로 보여 준다.
+      alert(error.response?.data?.message || '배정 변경에 실패했습니다. 다시 시도해주세요.');
     } finally {
       // pending state is managed by the mutation.
     }
@@ -318,8 +384,8 @@ export default function AssignmentsPage() {
 
   const openSmartModal = () => {
     const eligible = availableEvaluators.filter((ev) => ev.status === 'ACTIVE');
-    const addSuggestions       = computeSmartSuggestions(programs, eligible, effectiveMap);
-    const rebalanceSuggestions = computeRebalanceSuggestions(programs, eligible, effectiveMap);
+    const addSuggestions       = computeSmartSuggestions(programs, eligible, evaluateMap);
+    const rebalanceSuggestions = computeRebalanceSuggestions(programs, eligible, evaluateMap);
     setSmartModal([...addSuggestions, ...rebalanceSuggestions]);
   };
 
@@ -333,14 +399,19 @@ export default function AssignmentsPage() {
         const serverEntry = assignmentMap[programId]?.[evaluatorId];
         const currentPending = next[programId][evaluatorId];
 
+        // 스마트 배정은 심사 권한만 다룬다. 결과 조회 권한은 그대로 둔다.
         if (action === 'add') {
-          if (!serverEntry && currentPending !== 'add') {
-            next[programId][evaluatorId] = 'add';
+          if (!serverEntry) {
+            next[programId][evaluatorId] = { canEvaluate: true, canViewResults: currentPending?.canViewResults ?? false };
+          } else if (!serverEntry.canEvaluate) {
+            next[programId][evaluatorId] = { canEvaluate: true, canViewResults: serverEntry.canViewResults };
           }
         } else {
-          if (serverEntry && serverEntry.status !== 'SUBMITTED') {
-            next[programId][evaluatorId] = 'remove';
-          } else if (!serverEntry && currentPending === 'add') {
+          if (serverEntry && serverEntry.canEvaluate && serverEntry.status !== 'SUBMITTED') {
+            // 결과 조회도 가진 배정은 기록이 없을 때(ASSIGNED)만 심사 권한을 뺀다. 기록이 있으면 서버가 409로 막는다.
+            if (!serverEntry.canViewResults) next[programId][evaluatorId] = 'remove';
+            else if (serverEntry.status === 'ASSIGNED') next[programId][evaluatorId] = { canEvaluate: false, canViewResults: true };
+          } else if (!serverEntry && currentPending && currentPending !== 'remove') {
             delete next[programId][evaluatorId];
           }
         }
@@ -349,14 +420,15 @@ export default function AssignmentsPage() {
     });
   };
 
-  const assignedPrograms   = programs.filter((p) => Object.keys(effectiveMap[p.id] ?? {}).length > 0);
-  const unassignedPrograms = programs.filter((p) => Object.keys(effectiveMap[p.id] ?? {}).length === 0);
-  const totalAssignments   = programs.reduce((sum, p) => sum + Object.keys(effectiveMap[p.id] ?? {}).length, 0);
+  // 배정 현황·부담은 심사 권한 기준이다. 결과 조회만 가진 배정은 세지 않는다.
+  const assignedPrograms   = programs.filter((p) => Object.keys(evaluateMap[p.id] ?? {}).length > 0);
+  const unassignedPrograms = programs.filter((p) => Object.keys(evaluateMap[p.id] ?? {}).length === 0);
+  const totalAssignments   = programs.reduce((sum, p) => sum + Object.keys(evaluateMap[p.id] ?? {}).length, 0);
   const avgPerProgram      = programs.length > 0 ? (totalAssignments / programs.length).toFixed(1) : '—';
 
   const evaluatorWorkload = evaluators.map((ev) => ({
     ...ev,
-    count: programs.filter((p) => effectiveMap[p.id]?.[ev.id] !== undefined).length,
+    count: programs.filter((p) => evaluateMap[p.id]?.[ev.id] !== undefined).length,
   }));
   const maxWorkload = Math.max(...evaluatorWorkload.map((e) => e.count), 1);
 
@@ -367,7 +439,7 @@ export default function AssignmentsPage() {
       <PageHeader
         breadcrumb={['평가ON', '심사 배정']}
         title="심사위원 배정"
-        subtitle="심사위원을 프로그램 단위로 배정합니다. 배정된 심사위원은 해당 프로그램의 모든 지원 팀을 평가합니다."
+        subtitle="심사위원을 프로그램 단위로 배정하고 권한을 고릅니다. 심사 권한은 모든 지원 팀 채점, 결과 조회 권한은 평가 결과 열람(읽기 전용)입니다."
       >
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -398,6 +470,13 @@ export default function AssignmentsPage() {
       {loading ? (
         <div className="text-center py-20 text-gray-500">로딩 중...</div>
       ) : (
+        <>
+        <div className="flex flex-wrap items-center gap-4 mb-2 px-1 text-xs text-gray-600" aria-label="배정 셀 범례">
+          <span className="inline-flex items-center gap-1.5"><span className="inline-flex w-5 h-5 items-center justify-center rounded bg-blue-600 text-[10px] font-bold text-white">심</span>심사</span>
+          <span className="inline-flex items-center gap-1.5"><span className="inline-flex w-5 h-5 items-center justify-center rounded bg-violet-600 text-[10px] font-bold text-white">결</span>결과 조회</span>
+          <span className="inline-flex items-center gap-1.5"><span className="inline-flex w-5 h-5 rounded border-2 border-dashed border-blue-600 ring-2 ring-amber-300" />확정 전 변경</span>
+          <span className="text-gray-500">셀을 눌러 권한을 고르세요.</span>
+        </div>
         <div className="flex flex-col xl:flex-row gap-2 items-stretch xl:items-start">
           {/* 매트릭스 */}
           <div className="flex-1 min-w-0">
@@ -423,13 +502,13 @@ export default function AssignmentsPage() {
                           </div>
                         </th>
                       ))}
-                      <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 min-w-[48px]">합계</th>
+                      <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500 min-w-[48px]">심사</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {displayedPrograms.map((program, idx) => {
                       const rowMap       = effectiveMap[program.id] ?? {};
-                      const assignedCount = Object.keys(rowMap).length;
+                      const assignedCount = Object.keys(evaluateMap[program.id] ?? {}).length;
                       const color        = getProgramColor(idx);
                       const badge        = STATUS_BADGE[program.status] ?? STATUS_BADGE.DRAFT;
                       const typeLabel    = TYPE_LABEL[program.type] ?? program.type;
@@ -455,15 +534,22 @@ export default function AssignmentsPage() {
                           </td>
                           {evaluators.map((ev) => {
                             const assignment   = rowMap[ev.id];
-                            const pendingAction = pendingMap[program.id]?.[ev.id];
+                            const pendingAction = pendingActionOf(program.id, ev.id);
+                            const serverAssignment = assignmentMap[program.id]?.[ev.id];
+                            const isOpen = openCell?.programId === program.id && openCell?.evaluatorId === ev.id;
                             return (
                               <td key={ev.id} className="px-3 py-3.5 text-center">
                                 <div className="flex justify-center">
                                   <AssignCell
-                                    checked={!!assignment}
-                                    disabled={(ev.deleted || ev.status === 'INACTIVE') && !assignment && pendingAction !== 'remove'}
+                                    permissions={pendingAction === 'remove' ? serverAssignment : assignment}
+                                    disabled={(ev.deleted || ev.status === 'INACTIVE') && !serverAssignment}
                                     pendingAction={pendingAction}
-                                    onChange={() => toggleAssignment(program.id, ev.id)}
+                                    open={isOpen}
+                                    label={`${ev.name || ev.email?.split('@')[0] || '심사위원'} · ${program.title}`}
+                                    onOpen={() => setOpenCell({ programId: program.id, evaluatorId: ev.id })}
+                                    onClose={() => setOpenCell(null)}
+                                    onChange={(next) => setCellPermissions(program.id, ev.id, next)}
+                                    onRevert={() => revertCell(program.id, ev.id)}
                                   />
                                 </div>
                               </td>
@@ -538,6 +624,7 @@ export default function AssignmentsPage() {
             </div>
           </div>
         </div>
+        </>
       )}
 
       {smartModal !== null && (

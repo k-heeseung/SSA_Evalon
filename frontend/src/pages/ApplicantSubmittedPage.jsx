@@ -4,6 +4,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { getApplication, cancelApplication } from '../api/applications';
 import { isFileField, formatFileSize, formatDateTime } from '../utils/applicant';
 import { FIELD_TYPE_LABEL, normalizeFieldType, parseCheckboxValue } from '../utils/formFields';
+import ApplicantValuesView from '../components/ApplicantValuesView';
+import { usesCustomApplicantFields } from '../utils/applicantFields';
 import TeamMemberList from '../components/TeamMemberList';
 import { formatPhone } from '../utils/phone';
 import { queryKeys } from '../query/keys';
@@ -73,6 +75,8 @@ export default function ApplicantSubmittedPage() {
   const attachments = app.attachments || [];
   const info = app.applicantInfo || {};
   const isTeam = app.participantType === 'TEAM';
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목 방식이다.
+  const isCustom = usesCustomApplicantFields(app.applicantFields);
   const attachmentsEnabled = !!app.attachmentsEnabled;
   const answerFields = app.fields.filter((f) => !isFileField(f.fieldType));
 
@@ -155,7 +159,17 @@ export default function ApplicantSubmittedPage() {
         {/* 지원 정보 (본인/팀 정보) */}
         <div>
           <h3 className="text-sm font-semibold text-gray-700 mb-3">{isTeam ? '팀 정보' : '지원자 정보'}</h3>
-          {isTeam ? (
+          {isCustom ? (
+            <>
+              {isTeam && (
+                <div className="mb-4">
+                  <div className="text-xs text-gray-500 mb-1">팀 이름</div>
+                  <div className="text-sm text-gray-800">{app.teamName || '—'}</div>
+                </div>
+              )}
+              <ApplicantValuesView fields={app.applicantFields} info={info} isTeam={isTeam} />
+            </>
+          ) : isTeam ? (
             <>
               <div className="mb-4">
                 <div className="text-xs text-gray-500 mb-1">팀 이름</div>

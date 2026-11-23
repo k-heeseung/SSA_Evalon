@@ -3,6 +3,11 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { getMyApplications, updateTeamInfo } from '../api/applications';
 import TeamMemberList from '../components/TeamMemberList';
+import CustomApplicantInputs from '../components/CustomApplicantInputs';
+import ApplicantValuesView from '../components/ApplicantValuesView';
+import {
+  usesCustomApplicantFields, toCustomApplicantState, customApplicantPayload, missingCustomApplicantFields,
+} from '../utils/applicantFields';
 import { formatPhone, formatPhoneInput, isValidPhone, toDigits } from '../utils/phone';
 import { queryKeys } from '../query/keys';
 import { useLiveApiQuery } from '../query/useApiQuery';
@@ -23,6 +28,9 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
   const { exitForDeadline, deadlineNotice, confirmDeadlineExit } = useApplicationDeadlineExit();
   const isTeam = app.participantType === 'TEAM';
   const info = app.applicantInfo || {};
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목 방식이다.
+  const isCustom = usesCustomApplicantFields(app.applicantFields);
+  const applicantFields = isCustom ? app.applicantFields : [];
   const { period, checkPeriod } = useApplicationEditorPeriod(app, queryKeys.myApplications, receivedAt,
     (apps) => apps?.find((item) => item.applicationId === app.applicationId));
   const writeBlocked = !period.applicationOpen;
@@ -39,6 +47,8 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
   const [pEmail, setPEmail] = useState('');
   const [pPhone, setPPhone] = useState('');
   const [members, setMembers] = useState([]);
+  const [customValues, setCustomValues] = useState({});
+  const [customMembers, setCustomMembers] = useState([]);
 
   // 편집 시작: 현재 저장된 값으로 폼을 채운다.
   const startEdit = () => {
@@ -54,6 +64,9 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
     setMembers(Array.isArray(info.members)
       ? info.members.map((m) => ({ name: m.name || '', email: m.email || '', phone: formatPhone(m.phone) }))
       : []);
+    const custom = toCustomApplicantState(info);
+    setCustomValues(custom.values);
+    setCustomMembers(custom.members);
     setError('');
     setEditing(true);
   };
@@ -84,12 +97,18 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
     const blocked = current.blockedMessage;
     if (blocked) { setError(blocked); return; }
     setError('');
-    const phoneError = findPhoneError();
-    if (phoneError) {
-      setError(phoneError);
-      return;
+    const customState = { teamName, values: customValues, members: customMembers };
+    if (isCustom) {
+      const missing = missingCustomApplicantFields(applicantFields, isTeam, customState);
+      if (missing.length > 0) { setError(`필수 항목을 입력해주세요: ${missing.join(', ')}`); return; }
+    } else {
+      const phoneError = findPhoneError();
+      if (phoneError) {
+        setError(phoneError);
+        return;
+      }
     }
-    const payload = {
+    const payload = isCustom ? customApplicantPayload(applicantFields, isTeam, customState) : {
       teamName: isTeam ? (teamName.trim() || null) : null,
       participantName: pName.trim() || null,
       participantEmail: pEmail.trim() || null,
@@ -118,7 +137,7 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
       <ApplicationDeadlineDialog message={deadlineNotice} onConfirm={confirmDeadlineExit} />
       <header className="applicant-team-card-header">
         <div className="applicant-team-title-row">
-          <h2>{isTeam ? (app.teamName || '팀 이름 미등록') : (info.name || '이름 미등록')}</h2>
+          <h2>{isTeam ? (app.teamName || '팀 이름 미등록') : ((isCustom ? app.teamName : info.name) || '이름 미등록')}</h2>
           {!editing && (
             <button
               onClick={startEdit}
@@ -143,7 +162,9 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
       {/* 본문: 보기 모드 */}
       {!editing ? (
         <div>
-          {isTeam ? (
+          {isCustom ? (
+            <ApplicantValuesView fields={applicantFields} info={info} isTeam={isTeam} />
+          ) : isTeam ? (
             <TeamMemberList variant="profile" leaderName={info.name} leaderEmail={info.email} members={info.members} phone={info.phone} />
           ) : (
             <dl className="team-member-profile-contact applicant-team-personal-contact"><div><dt>이메일</dt><dd>{info.email || '미등록'}</dd></div><div><dt>연락처</dt><dd>{formatPhone(info.phone) || '미등록'}</dd></div></dl>
@@ -154,7 +175,18 @@ function TeamInfoCard({ app, onSaved, receivedAt }) {
         <div className="pt-4 space-y-4">
           <p className="text-sm text-gray-600">저장한 내용은 해당 지원서에 바로 반영됩니다.</p>
           <fieldset disabled={writeBlocked || saving} className="space-y-4 disabled:opacity-70">
-          {isTeam ? (
+          {isCustom ? (
+            <CustomApplicantInputs
+              fields={applicantFields}
+              isTeam={isTeam}
+              teamName={teamName}
+              onTeamNameChange={setTeamName}
+              values={customValues}
+              onValuesChange={setCustomValues}
+              members={customMembers}
+              onMembersChange={setCustomMembers}
+            />
+          ) : isTeam ? (
             <>
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">팀 이름</label>

@@ -23,6 +23,8 @@ public record ApplicationDetailResponse(
         boolean attachmentsEnabled,
         Integer maxAttachments,
         ParticipantType participantType,
+        // 지원자 인적사항 항목. null이면 예전 고정 항목 방식이고, 값이 있으면 applicantInfo.values / members[].values에 항목 id별 값이 담긴다.
+        List<ApplicantField> applicantFields,
         ApplicantInfo applicantInfo,
         List<FieldAnswer> fields,
         List<ParticipantAttachmentResponse> attachments,

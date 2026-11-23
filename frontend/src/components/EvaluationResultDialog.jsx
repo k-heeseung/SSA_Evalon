@@ -8,7 +8,8 @@ const reviewerName = evaluation => evaluation.evaluatorName || evaluation.evalua
 const submitted = evaluation => evaluation.submission?.status === 'SUBMITTED';
 const dateTime = value => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat('ko-KR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : null;
 
-export default function EvaluationResultDialog({ team, method, hasBonus, criteriaQuery, pending, nextTeam, message, onClose, onSave, onOpenTeam }) {
+// readOnly: 결과 조회 권한 심사위원용. 최종 판정 변경과 지원서·첨부 자료 이동을 숨긴다.
+export default function EvaluationResultDialog({ team, method, hasBonus, criteriaQuery, pending, nextTeam, message, onClose, onSave, onOpenTeam, readOnly = false }) {
   const dialogRef = useRef(null);
   const savingRef = useRef(false);
   const [draft, setDraft] = useState(null);
@@ -69,7 +70,7 @@ export default function EvaluationResultDialog({ team, method, hasBonus, criteri
         <div className="evaluation-result-total"><span>총합</span><strong>{fmt(team.final)}</strong></div>
       </div>
       <p className="evaluation-result-basis">{RESULT_METHODS[method]} · 심사 {team.submittedCount} / {team.assignedCount}명 제출</p>
-      {team.unavailableReason && <p className="program-results-warning">최종 점수 산출 불가: {team.unavailableReason}. 산출 불가 상태에서도 최종 판정은 저장할 수 있습니다.</p>}
+      {team.unavailableReason && <p className="program-results-warning">최종 점수 산출 불가: {team.unavailableReason}.{!readOnly && ' 산출 불가 상태에서도 최종 판정은 저장할 수 있습니다.'}</p>}
       <section aria-labelledby="evaluation-result-scores"><h3 id="evaluation-result-scores">기준별 점수</h3>
         {criteriaQuery.isPending ? <p role="status">평가 기준을 불러오는 중입니다…</p> : criteriaQuery.isError ? <p role="alert">평가 기준을 불러오지 못했습니다. <Button onClick={() => criteriaQuery.refetch()}>다시 시도</Button></p> : !criteria.length ? <p>등록된 평가 기준이 없습니다.</p> : !evaluations.length ? <p>배정된 심사위원이 없습니다.</p> : <TableScroll>
           <table className="evaluation-result-scores"><thead><tr><th scope="col">평가 기준</th>{evaluations.map((evaluation, index) => <th scope="col" key={evaluation.evaluatorId}>{reviewerName(evaluation)}<small>{!submitted(evaluation) ? '미제출' : team.excludedIndices.includes(index) ? '평균 산출 제외' : '제출 완료'}</small></th>)}</tr></thead>
@@ -87,6 +88,7 @@ export default function EvaluationResultDialog({ team, method, hasBonus, criteri
         {!evaluations.length && <p>배정된 심사위원이 없습니다.</p>}
         <div className="evaluation-result-comments">{evaluations.map(evaluation => <article key={evaluation.evaluatorId}><div><strong>{reviewerName(evaluation)}</strong><span>{submitted(evaluation) ? dateTime(evaluation.submission.submittedAt) || '제출 완료' : '미제출'}</span></div><p>{submitted(evaluation) ? evaluation.submission.oneLineComment?.trim() || '등록된 의견이 없습니다.' : '아직 심사가 제출되지 않았습니다.'}</p></article>)}</div>
       </section>
+      {readOnly ? <p className="evaluation-result-basis">최종 판정: <strong>{(RESULT_STATUS[team.teamStatus] ?? RESULT_STATUS.PENDING).label}</strong></p> : <>
       <Button variant="ghost" className="evaluation-result-materials" disabled={pending} onClick={() => leave(onOpenTeam)}>지원서 · 첨부 자료 · 팀 정보 보기</Button>
       <footer className="evaluation-result-verdict">
         <fieldset disabled={pending}><legend>최종 판정</legend><p>지원자에게는 노출되지 않습니다.</p><div className="evaluation-result-options">{Object.entries(RESULT_STATUS).map(([key, info]) => <label key={key}><input type="radio" name="finalVerdict" value={key} checked={value === key} onChange={() => { setDraft(key); setError(''); }} />{info.label}</label>)}</div></fieldset>
@@ -95,6 +97,7 @@ export default function EvaluationResultDialog({ team, method, hasBonus, criteri
         <div className="evaluation-result-save"><Button disabled={!dirty || pending} onClick={() => setDraft(null)}>변경 취소</Button><Button disabled={!dirty || pending} onClick={() => save(false)}>판정 저장</Button><Button variant="primary" disabled={!nextTeam || pending} onClick={() => save(true)}>저장 후 다음</Button></div>
         {!nextTeam && <p className="evaluation-result-hint">현재 목록의 마지막 팀입니다.</p>}
       </footer>
+      </>}
     </div>
   </dialog>;
 }

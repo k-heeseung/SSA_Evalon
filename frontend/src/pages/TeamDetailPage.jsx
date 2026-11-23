@@ -13,6 +13,9 @@ import { normalizeFieldType, isFileType, parseCheckboxValue } from '../utils/for
 import PageHeader from '../components/PageHeader';
 import FieldInput from '../components/FieldInput';
 import TeamMemberList from '../components/TeamMemberList';
+import ApplicantValuesView from '../components/ApplicantValuesView';
+import CustomApplicantInputs from '../components/CustomApplicantInputs';
+import { usesCustomApplicantFields, toCustomApplicantState, customApplicantPayload } from '../utils/applicantFields';
 import { formatPhone, formatPhoneInput, isValidPhone, toDigits } from '../utils/phone';
 import { queryKeys } from '../query/keys';
 import { useLiveApiQuery } from '../query/useApiQuery';
@@ -217,6 +220,8 @@ export default function TeamDetailPage() {
   // 지원 정보(지원자가 제출한 본인/팀원 정보 + 양식 답변)
   const appInfo = application?.applicantInfo || {};
   const isTeamApp = application?.participantType === 'TEAM';
+  // 매니저가 정한 지원자 정보 항목. null이면 예전 고정 항목 방식이다.
+  const isCustomApp = usesCustomApplicantFields(application?.applicantFields);
   const answerFields = (application?.fields || []).filter((f) => !isFileType(f.fieldType));
   const appSubmitted = application?.status === 'SUBMITTED';
 
@@ -316,7 +321,12 @@ export default function TeamDetailPage() {
               </div>
               <div className="p-5 space-y-5">
                 {/* 지원자 / 팀 구성원 */}
-                {isTeamApp ? (
+                {isCustomApp ? (
+                  <div className="space-y-3">
+                    {isTeamApp && <Info label="팀 이름" value={application.teamName} />}
+                    <ApplicantValuesView fields={application.applicantFields} info={appInfo} isTeam={isTeamApp} />
+                  </div>
+                ) : isTeamApp ? (
                   <TeamMemberList
                     leaderName={appInfo.name}
                     leaderEmail={appInfo.email}
@@ -708,6 +718,8 @@ export default function TeamDetailPage() {
 function EditApplicationModal({ teamId, application, attachments = [], onAttachmentsChanged, onClose, onSaved }) {
   const isTeam = application.participantType === 'TEAM';
   const appInfo = application.applicantInfo || {};
+  const isCustom = usesCustomApplicantFields(application.applicantFields);
+  const applicantFields = isCustom ? application.applicantFields : [];
   const textFields = (application.fields || []).filter((f) => !isFileType(f.fieldType));
   const attachmentsEnabled = application.attachmentsEnabled || attachments.length > 0;
   const maxAttachments = application.maxAttachments ?? 1;
@@ -724,6 +736,9 @@ function EditApplicationModal({ teamId, application, attachments = [], onAttachm
   const [members, setMembers] = useState(
     (appInfo.members || []).map((m) => ({ name: m.name || '', email: m.email || '', phone: formatPhone(m.phone) })),
   );
+  const [customState] = useState(() => toCustomApplicantState(appInfo));
+  const [customValues, setCustomValues] = useState(customState.values);
+  const [customMembers, setCustomMembers] = useState(customState.members);
   const [answers, setAnswers] = useState(
     () => Object.fromEntries(textFields.map((f) => [f.fieldId, f.value || ''])),
   );
@@ -753,7 +768,13 @@ function EditApplicationModal({ teamId, application, attachments = [], onAttachm
   };
 
   const mutation = useMutation({
-    mutationFn: () => updateTeamApplication(teamId, {
+    mutationFn: () => updateTeamApplication(teamId, isCustom ? {
+      ...customApplicantPayload(applicantFields, isTeam, { teamName, values: customValues, members: customMembers }),
+      participantName: null,
+      participantEmail: null,
+      participantPhone: null,
+      answers: textFields.map((f) => ({ formFieldId: f.fieldId, value: answers[f.fieldId] ?? '' })),
+    } : {
       teamName: isTeam ? teamName.trim() : null,
       participantName: participant.name.trim(),
       participantEmail: participant.email.trim() || null,
@@ -802,6 +823,7 @@ function EditApplicationModal({ teamId, application, attachments = [], onAttachm
     e.preventDefault();
     setError('');
     if (isTeam && !teamName.trim()) { setError('팀 이름을 입력해주세요.'); return; }
+    if (isCustom) { mutation.mutate(); return; }
     if (!participant.name.trim()) { setError(isTeam ? '팀장(본인) 이름을 입력해주세요.' : '이름을 입력해주세요.'); return; }
     const phoneError = findPhoneError();
     if (phoneError) { setError(phoneError); return; }
@@ -819,8 +841,21 @@ function EditApplicationModal({ teamId, application, attachments = [], onAttachm
         </div>
 
         <form onSubmit={submit} className="p-6 space-y-5 overflow-y-auto">
-          {/* 팀명 / 본인 정보 */}
-          <div className="space-y-3">
+          {isCustom && (
+            <CustomApplicantInputs
+              fields={applicantFields}
+              isTeam={isTeam}
+              teamName={teamName}
+              onTeamNameChange={(value) => { setTeamName(value); setError(''); }}
+              values={customValues}
+              onValuesChange={setCustomValues}
+              members={customMembers}
+              onMembersChange={setCustomMembers}
+            />
+          )}
+
+          {/* 팀명 / 본인 정보 (예전 고정 항목 방식) */}
+          {!isCustom && <div className="space-y-3">
             {isTeam && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">팀 이름</label>
@@ -841,10 +876,10 @@ function EditApplicationModal({ teamId, application, attachments = [], onAttachm
                 <input type="text" value={participant.phone} onChange={setParticipantField('phone')} className={'ui-input ' + (inputClass)} />
               </div>
             </div>
-          </div>
+          </div>}
 
-          {/* 팀원 (팀 지원만) */}
-          {isTeam && (
+          {/* 팀원 (팀 지원만, 예전 고정 항목 방식) */}
+          {!isCustom && isTeam && (
             <div className="border-t border-gray-100 pt-4">
               <div className="flex flex-wrap gap-3 items-center justify-between mb-2">
                 <label className="text-sm font-medium text-gray-700">팀원</label>

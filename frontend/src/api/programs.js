@@ -29,6 +29,8 @@ export const getCriteria = (programId) => api.get(`/programs/${programId}/criter
 export const getAssignmentsByProgram = (programId) => api.get(`/programs/${programId}/assignments`);
 export const getEvaluatorsByProgram = (programId) => api.get(`/programs/${programId}/evaluators`);
 export const createAssignment = (programId, data) => api.post(`/programs/${programId}/assignments`, data);
+// data: { canEvaluate, canViewResults }. 둘 다 false면 400 — 해제는 cancelAssignment를 쓴다.
+export const updateAssignmentPermissions = (assignmentId, data) => api.put(`/assignments/${assignmentId}/permissions`, data);
 export const cancelAssignment = (assignmentId) => api.delete(`/assignments/${assignmentId}`);
 
 export const getEvaluationResults = (programId) => api.get(`/programs/${programId}/evaluation-results`);

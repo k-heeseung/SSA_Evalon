@@ -29,8 +29,21 @@ public record SaveProgramRequest(
         List<BonusItemRequest> bonusItems,
         List<Criterion> criteria,
         List<FormField> formFields,
+        List<ApplicantField> applicantFields,
         boolean publish
 ) {
+    // applicantFields(지원자 인적사항 항목)는 POST에서 null이면 예전 고정 항목 방식, PUT에서 null이면 기존 설정 유지.
+    // 배열 순서가 곧 표시 순서다. id가 null이면 새 항목으로 서버가 id를 붙이고, 요청에 없는 기존 항목은 삭제한다.
+    public SaveProgramRequest(String title, String description, ProgramType type, ParticipantType participantType,
+            String eligibilityCriteria, OffsetDateTime applicationStartAt, OffsetDateTime applicationDeadlineAt,
+            OffsetDateTime evaluationStartAt, OffsetDateTime evaluationDeadlineAt, Boolean attachmentsEnabled,
+            Integer maxAttachments, Boolean bonusEnabled, List<BonusItemRequest> bonusItems,
+            List<Criterion> criteria, List<FormField> formFields, boolean publish) {
+        this(title, description, type, participantType, eligibilityCriteria, applicationStartAt, applicationDeadlineAt,
+                evaluationStartAt, evaluationDeadlineAt, attachmentsEnabled, maxAttachments, bonusEnabled, bonusItems,
+                criteria, formFields, null, publish);
+    }
+
     public record Criterion(Long id, String name, String description, BigDecimal maxScore) {
     }
 

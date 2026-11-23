@@ -21,7 +21,9 @@ public record ApplicationSummaryResponse(
         LocalDateTime submittedAt,
         LocalDateTime updatedAt,
         ApplicantInfo applicantInfo,
-        ProgramScheduleResponse schedule
+        ProgramScheduleResponse schedule,
+        // 지원자 인적사항 항목. null이면 예전 고정 항목 방식이다. (ApplicationDetailResponse와 같은 의미)
+        java.util.List<ApplicantField> applicantFields
 ) {
 
     public static ApplicationSummaryResponse from(Application application) {
@@ -37,7 +39,8 @@ public record ApplicationSummaryResponse(
                 application.getSubmittedAt(),
                 application.getUpdatedAt(),
                 ApplicantInfo.of(application.getTeam()),
-                ProgramScheduleResponse.from(application.getProgram())
+                ProgramScheduleResponse.from(application.getProgram()),
+                com.example.evalhub.util.ApplicantFields.parse(application.getProgram().getApplicantFields())
         );
     }
 }

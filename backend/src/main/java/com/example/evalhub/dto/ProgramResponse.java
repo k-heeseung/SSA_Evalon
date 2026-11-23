@@ -30,7 +30,9 @@ public record ProgramResponse(
         long submittedCount,
         ProgramScheduleResponse schedule,
         java.util.List<BonusItemResponse> bonusItems,
-        boolean evaluationStarted
+        boolean evaluationStarted,
+        // 지원자 인적사항 항목. null이면 예전 고정 항목 방식(이름·이메일·연락처, 팀원 명단)이다.
+        java.util.List<ApplicantField> applicantFields
 ) {
 
     public static ProgramResponse from(Program program) {
@@ -61,7 +63,8 @@ public record ProgramResponse(
                 submittedCount,
                 schedule,
                 program.getBonusItems().stream().map(BonusItemResponse::from).toList(),
-                program.isEvaluationStarted()
+                program.isEvaluationStarted(),
+                com.example.evalhub.util.ApplicantFields.parse(program.getApplicantFields())
         );
     }
 }

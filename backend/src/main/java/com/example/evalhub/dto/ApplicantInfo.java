@@ -3,29 +3,44 @@ package com.example.evalhub.dto;
 import com.example.evalhub.entity.Team;
 import com.example.evalhub.util.PhoneNumbers;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
+import java.util.Map;
 
 // 지원자가 입력한 본인/팀원 정보. teams.applicant_info 컬럼에 JSON으로 저장한다.
 // name/email/phone: 지원자 본인(팀 지원 시 팀장). members: 팀 지원 시 추가 팀원 명단.
 // 전화번호는 모두 숫자만 남긴 정규화 형태로 저장하고, 화면 표시용 하이픈은 프론트에서 붙인다.
+// values: 매니저가 항목을 직접 정한 프로그램(programs.applicant_fields)에서 본인(팀 지원 시 대표자)이 입력한 값.
+//         키는 항목 id다. 예전 고정 항목 방식의 프로그램에서는 비어 있고 JSON에도 쓰지 않는다.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ApplicantInfo(
         String name,
         String email,
         String phone,
-        List<Member> members
+        List<Member> members,
+        @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, String> values
 ) {
 
+    public ApplicantInfo(String name, String email, String phone, List<Member> members) {
+        this(name, email, phone, members, Map.of());
+    }
+
+    // values: 항목을 직접 정한 프로그램에서 이 팀원이 입력한 값. 키는 항목 id.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Member(String name, String email, String phone) {
+    public record Member(String name, String email, String phone,
+                         @JsonInclude(JsonInclude.Include.NON_EMPTY) Map<String, String> values) {
+
+        public Member(String name, String email, String phone) {
+            this(name, email, phone, Map.of());
+        }
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public static ApplicantInfo empty() {
-        return new ApplicantInfo(null, null, null, List.of());
+        return new ApplicantInfo(null, null, null, List.of(), Map.of());
     }
 
     // JSON 텍스트 → 객체. 값이 없거나 파싱 실패 시 빈 정보를 반환한다.
@@ -36,7 +51,11 @@ public record ApplicantInfo(
             ApplicantInfo info = MAPPER.readValue(json, ApplicantInfo.class);
             return new ApplicantInfo(
                     info.name(), info.email(), info.phone(),
-                    info.members() == null ? List.of() : info.members()
+                    info.members() == null ? List.of() : info.members().stream()
+                            .filter(java.util.Objects::nonNull)
+                            .map(m -> m.values() == null ? new Member(m.name(), m.email(), m.phone()) : m)
+                            .toList(),
+                    info.values() == null ? Map.of() : info.values()
             );
         } catch (Exception e) {
             return empty();
@@ -53,7 +72,7 @@ public record ApplicantInfo(
     }
 
     public ApplicantInfo withPhone(String phone) {
-        return new ApplicantInfo(name, email, phone, members);
+        return new ApplicantInfo(name, email, phone, members, values);
     }
 
     // 계정 생성/연결 여부와 무관하게 지원서에 적힌 팀장과 추가 팀원을 모두 센다.

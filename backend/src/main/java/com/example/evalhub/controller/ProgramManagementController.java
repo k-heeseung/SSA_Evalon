@@ -263,6 +263,15 @@ public class ProgramManagementController {
         return evaluationService.getEvaluationResults(programId);
     }
 
+    @Operation(summary = "배정 권한 변경", description = "배정은 유지하고 심사 / 결과 조회 권한만 바꿉니다. 둘 다 끄면 400, 채점 기록이 있는 배정에서 심사 권한을 빼면 409입니다.")
+    @PutMapping("/assignments/{assignmentId}/permissions")
+    public AssignmentResponse updateAssignmentPermissions(
+            @PathVariable Long assignmentId,
+            @RequestBody UpdateAssignmentPermissionsRequest request
+    ) {
+        return programManagementService.updateAssignmentPermissions(assignmentId, request);
+    }
+
     @Operation(summary = "배정 삭제", description = "제출 여부와 무관하게 배정과 해당 평가 기록을 삭제합니다. 기존 평가는 결과에서 제외되며 평균·순위가 변경될 수 있습니다.")
     @DeleteMapping("/assignments/{assignmentId}")
     public void cancelAssignment(@PathVariable Long assignmentId) {

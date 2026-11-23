@@ -10,3 +10,8 @@ export const saveDraft = (assignmentId, teamId, data) =>
   api.put(`/evaluation-assignments/${assignmentId}/teams/${teamId}/draft`, data);
 export const submitEvaluation = (assignmentId, teamId, data) =>
   api.post(`/evaluation-assignments/${assignmentId}/teams/${teamId}/submit`, data);
+// 결과 조회 권한이 있는 배정 전용. { program, criteria, results }를 한 번에 내려준다. 평가 진행 전이면 409.
+export const getAssignmentResults = (assignmentId) =>
+  api.get(`/evaluation-assignments/${assignmentId}/results`);
+export const getAssignmentResultsPdf = (assignmentId, onlyPassed = false, method = 'ALL') =>
+  api.get(`/evaluation-assignments/${assignmentId}/results/pdf`, { params: { onlyPassed, method }, responseType: 'blob' });
