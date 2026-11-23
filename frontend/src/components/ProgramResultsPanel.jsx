@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, TableScroll } from './ui';
 import { changeTeamStatus, getCriteria, getEvaluationResults, getEvaluationResultsPdf } from '../api/programs';
-import { rankedTeams, exportAllTeamsExcel, exportFinalExcel } from '../utils/export';
+import { rankedTeams, exportAllTeamsExcel, exportFinalExcel, exportEvaluatorExcel } from '../utils/export';
 import { downloadPdfResponse } from '../utils/pdfDownload';
 import { queryKeys } from '../query/keys';
 import { useLiveApiQuery } from '../query/useApiQuery';
@@ -11,6 +11,8 @@ import { RESULT_METHODS } from '../utils/resultScoring';
 import { RESULT_STATUS } from '../utils/resultPresentation';
 import EvaluationResultDialog from './EvaluationResultDialog';
 import ProgramResultsExports from './ProgramResultsExports';
+import ProgramResultsByEvaluator from './ProgramResultsByEvaluator';
+import { EVALUATOR_SORTS, evaluatorReview, listEvaluators } from '../utils/evaluatorResults';
 import './ProgramResultsPanel.css';
 
 const FILTERS = [{ key: 'ALL', label: '전체' }, ...['PASSED', 'FAILED', 'PENDING'].map(key => ({ key, label: RESULT_STATUS[key].label }))];
@@ -61,8 +63,16 @@ export default function ProgramResultsPanel({ programId, program }) {
     Object.entries(values).forEach(([key, value]) => value == null ? next.delete(key) : next.set(key, String(value)));
     return next;
   }, { replace: true, state: location.state });
+  // '심사위원별' 보기: 평균 산출 방식(resultMethod)과 별개로 resultView / resultEvaluator / resultSort를 URL에 둔다.
+  const byEvaluator = params.get('resultView') === 'EVALUATOR';
+  const evaluators = listEvaluators(results);
+  const evaluator = evaluators.find(item => String(item.evaluatorId) === params.get('resultEvaluator')) ?? evaluators[0];
+  const evaluatorSort = Object.hasOwn(EVALUATOR_SORTS, params.get('resultSort')) ? params.get('resultSort') : 'rank';
+  const review = byEvaluator && evaluator ? evaluatorReview(results, evaluator.evaluatorId, evaluatorSort) : null;
+  const evaluatorUnsubmitted = review ? review.summary.assignedCount - review.summary.submittedCount : 0;
   const openTeam = (team) => { setMessage(''); updateParams({ resultTeam: team.teamId }); };
-  const nextTeam = selected ? filtered[filtered.findIndex(team => team.teamId === selected.teamId) + 1] : null;
+  const navigationTeams = review ? review.rows.map(row => ranked.find(team => team.teamId === row.team.teamId)).filter(Boolean) : filtered;
+  const nextTeam = selected ? navigationTeams[navigationTeams.findIndex(team => team.teamId === selected.teamId) + 1] : null;
   const saveVerdict = async (status, advance) => {
     const savedTeam = selected;
     const following = nextTeam;
@@ -76,7 +86,8 @@ export default function ProgramResultsPanel({ programId, program }) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.evaluationResults(programId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.teams(programId) });
     }
-    if (advance && following) {
+    if (advance && following && byEvaluator) updateParams({ resultTeam: following.teamId });
+    else if (advance && following) {
       const remaining = filtered.filter(team => team.teamId !== savedTeam.teamId || filter === 'ALL' || status === filter);
       const index = remaining.findIndex(team => team.teamId === following.teamId);
       updateParams({ resultTeam: following.teamId, resultPage: Math.floor(Math.max(index, 0) / pageSize) + 1 });
@@ -94,6 +105,13 @@ export default function ProgramResultsPanel({ programId, program }) {
     } catch { setExportError('파일을 내보내지 못했습니다. 잠시 후 다시 시도해주세요.'); }
     finally { setExportPending(false); }
   };
+  const exportEvaluator = async () => {
+    if (exportPending || !review) return;
+    setExportError(''); setExportPending(true);
+    try { await exportEvaluatorExcel(program?.title || '평가 결과', evaluator.name, review, criteriaQuery.data ?? []); }
+    catch { setExportError('파일을 내보내지 못했습니다. 잠시 후 다시 시도해주세요.'); }
+    finally { setExportPending(false); }
+  };
   const goToTeamInfo = () => navigate(`/operations/programs/${programId}/teams/${selected.teamId}`, {
     state: { resultReturn: `${location.pathname}${location.search}`, resultMethod: method },
   });
@@ -104,11 +122,28 @@ export default function ProgramResultsPanel({ programId, program }) {
 
   return <div className="program-results">
     <div className="program-results-method-row">
-      <div className="program-results-method-control"><span>평균 산출 방식</span><div role="group" aria-label="평균 산출 방식">
-        {Object.entries(RESULT_METHODS).map(([key,label]) => <button key={key} type="button" aria-pressed={method === key} disabled={exportPending} onClick={() => updateParams({ resultMethod:key, resultPage:1 })}>{label}</button>)}
-      </div></div>
-      {calculable.length < ranked.length && <span className="program-results-provisional">잠정 순위 · 산출 불가 {ranked.length - calculable.length}팀</span>}
+      <div className="program-results-method-control"><span>결과 보기</span><div role="group" aria-label="결과 보기">
+        {Object.entries(RESULT_METHODS).map(([key,label]) => <button key={key} type="button" aria-pressed={!byEvaluator && method === key} disabled={exportPending} onClick={() => updateParams({ resultMethod:key, resultPage:1, resultView:null })}>{label}</button>)}
+        <span className="program-results-method-separator" aria-hidden="true" />
+        <button type="button" aria-pressed={byEvaluator} disabled={exportPending} onClick={() => updateParams({ resultView:'EVALUATOR' })}>심사위원별</button>
+      </div>
+      {byEvaluator && evaluator && <label className="program-results-evaluator-select"><span>심사위원</span>
+        <select value={evaluator.evaluatorId} disabled={exportPending} onChange={event => updateParams({ resultEvaluator:event.target.value })}>
+          {evaluators.map(item => <option key={item.evaluatorId} value={item.evaluatorId}>{item.name}</option>)}
+        </select>
+      </label>}
+      </div>
+      {byEvaluator
+        ? evaluatorUnsubmitted > 0 && <span className="program-results-provisional">미제출 {evaluatorUnsubmitted}팀 · 제출분만 비교</span>
+        : calculable.length < ranked.length && <span className="program-results-provisional">잠정 순위 · 산출 불가 {ranked.length - calculable.length}팀</span>}
     </div>
+    {byEvaluator ? <>
+      {resultsQuery.isError && <p role="alert" className="program-results-warning">최신 결과를 갱신하지 못했습니다. <Button onClick={() => resultsQuery.refetch()}>다시 시도</Button></p>}
+      <p className="program-results-feedback" role="status" aria-live="polite">{message}</p>
+      <ProgramResultsByEvaluator evaluator={evaluator} review={review} criteriaQuery={criteriaQuery} sort={evaluatorSort}
+        selectedTeamId={selected?.teamId} exportPending={exportPending} exportError={exportError}
+        onSort={key => updateParams({ resultSort:key })} onOpenTeam={openTeam} onExport={exportEvaluator} />
+    </> : <>
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 mb-2">
       {[{label:'심사 제출 완료',value:`${completed} / ${results.length}팀`},{label:'산출 가능',value:`${calculable.length}팀`},{label:'산출 불가',value:`${ranked.length-calculable.length}팀`},{label:'팀별 심사위원 평균',value:average}].map(item => <div key={item.label} className="bg-white rounded-xl border border-gray-200 p-4"><p className="text-xs text-gray-500 mb-1">{item.label}</p><p className="text-2xl font-bold text-gray-900">{item.value}</p></div>)}
     </div>
@@ -166,6 +201,7 @@ export default function ProgramResultsPanel({ programId, program }) {
       <ProgramResultsExports method={method} pending={exportPending} error={exportError} onExport={exportFile}/>
     </aside>
     </div>
+    </>}
     {selected && <EvaluationResultDialog key={selected.teamId} team={selected} method={method} hasBonus={hasBonus}
       criteriaQuery={criteriaQuery} pending={statusMutation.isPending} nextTeam={nextTeam} message={message}
       onClose={() => updateParams({ resultTeam: null })} onSave={saveVerdict} onOpenTeam={goToTeamInfo} />}

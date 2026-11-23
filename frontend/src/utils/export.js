@@ -130,3 +130,20 @@ export function exportFinalExcel(programTitle, results, method = 'ALL') {
   ]);
   return downloadSheet(`${sanitize(programTitle)}_${RESULT_METHODS[method]}_최종합격.xlsx`, '최종 합격', [header, ...rows]);
 }
+
+// 심사위원 한 명의 심사표 (Excel). review는 utils/evaluatorResults.js의 evaluatorReview() 결과.
+// 최종 제출된 심사만 점수로 쓰고, 미제출 팀은 점수 칸을 비운다.
+export function exportEvaluatorExcel(programTitle, evaluatorName, review, criteria) {
+  const header = ['최종 순위(전체 평균)', '팀명', ...criteria.map((c) => `${c.name} (/${Number(c.maxScore)})`), '총점', '다른 심사위원 평균', '차이', '한줄 의견', '제출 상태'];
+  const rows = review.rows.map((row) => [
+    row.rank ?? '—',
+    row.team.teamName,
+    ...criteria.map((c) => (row.submitted ? numOrBlank(row.scores.get(c.id)) : '')),
+    row.submitted ? numOrBlank(row.total) : '',
+    roundedOrBlank(row.othersAvg),
+    roundedOrBlank(row.diff),
+    row.comment,
+    row.submitted ? '제출 완료' : '미제출',
+  ]);
+  return downloadSheet(`${sanitize(programTitle)}_${sanitize(evaluatorName)}_심사표.xlsx`, '심사표', [header, ...rows]);
+}

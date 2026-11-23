@@ -1,0 +1,45 @@
+/* 평가 결과 · 심사위원별 보기. 기존 ProgramResultsPanel.css의 표·카드 클래스를 그대로 쓰고, 여기에는 추가분만 둔다. */
+
+/* '결과 보기' 버튼 묶음 안 구분선과 심사위원 선택 상자 */
+.program-results-method-separator { width:1px; align-self:stretch; margin:4px 3px; background:var(--ui-border); }
+.program-results-evaluator-select { display:flex; align-items:center; gap:8px; }
+.program-results-evaluator-select select { min-height:42px; min-width:9rem; max-width:16rem; padding:6px 36px 6px 12px; border:1px solid var(--ui-border); border-radius:8px; background:var(--ui-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280' stroke-width='1.5'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E") no-repeat right 10px center / 16px; color:var(--color-gray-900); font:inherit; font-size:14px; font-weight:500; appearance:none; cursor:pointer; text-overflow:ellipsis; }
+.program-results-evaluator-select select:hover { border-color:var(--color-gray-300); }
+
+.evaluator-results-layout { align-items:start; }
+.evaluator-results-table td.is-number { white-space:nowrap; }
+/* 순위는 한두 자리 숫자라 내용 폭만큼만 차지한다 */
+/* (ProgramResultsPanel.css가 이 파일보다 나중에 로드되어 td.program-results-rank의 width:64px를 이기도록 선택자를 한 단계 높인다) */
+.evaluator-results-table th.evaluator-results-rank, .evaluator-results-table td.program-results-rank.evaluator-results-rank { width:1%; padding-inline:12px; white-space:nowrap; }
+/* 팀 열만 왼쪽 정렬, 순위·기준별 점수·총점은 가운데 정렬 */
+.evaluator-results-table th:not(.evaluator-results-team-cell), .evaluator-results-table td:not(.evaluator-results-team-cell) { text-align:center; }
+/* 평가 기준명은 길이가 제각각이라 최대 2줄로 접고, 전체 이름은 title로 보여준다 */
+/* (표 셀의 max/min-width는 브라우저마다 무시될 수 있어 셀 안쪽 요소에 폭을 준다) */
+.evaluator-results-table th.evaluator-results-criterion { white-space:normal; }
+.evaluator-results-criterion-name { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; min-width:4.5rem; max-width:9rem; margin-inline:auto; word-break:keep-all; overflow-wrap:normal; line-height:1.4; }
+/* 팀 이름은 한 줄로 두고 한글 10~11자(10.5em)를 넘으면 …로 줄인다. 전체 이름은 title로 보여준다 */
+.evaluator-results-team-cell .program-results-team-link { display:block; min-width:7em; max-width:10.5em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:28px; }
+.evaluator-results-table tr.is-unsubmitted td { color:var(--color-gray-500); }
+.evaluator-results-comment { display:block; max-width:28ch; font-size:12px; color:var(--color-gray-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+
+.evaluator-results-legend { display:flex; flex-wrap:wrap; gap:4px 12px; margin:6px 0 8px; font-size:12px; color:var(--color-gray-600); }
+.evaluator-results-legend i { display:inline-block; width:8px; height:8px; margin-right:5px; border-radius:2px; }
+.evaluator-results-legend .is-mine, .evaluator-results-track.is-mine i { background:var(--color-blue-500); }
+.evaluator-results-legend .is-others, .evaluator-results-track.is-others i { background:var(--color-gray-400); }
+.evaluator-results-rate { padding:7px 0; border-top:1px solid var(--color-gray-100); }
+.evaluator-results-rate:first-of-type { border-top:0; padding-top:2px; }
+.evaluator-results-rate > div { display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:4px; font-size:13px; line-height:1.4; }
+.evaluator-results-rate > div > span { min-width:0; font-weight:500; color:var(--color-gray-800); }
+.evaluator-results-rate small { font-weight:400; color:var(--color-gray-500); }
+.evaluator-results-rate output { flex-shrink:0; font-size:12px; color:var(--color-gray-600); font-variant-numeric:tabular-nums; }
+.evaluator-results-rate output b { font-weight:600; color:var(--color-blue-700); }
+.evaluator-results-track { display:block; height:5px; overflow:hidden; border-radius:3px; background:var(--color-gray-100); }
+.evaluator-results-track + .evaluator-results-track { margin-top:2px; }
+.evaluator-results-track i { display:block; height:100%; border-radius:3px; }
+
+@media(max-width:639px) {
+  .program-results-method-separator { display:none; }
+  .program-results-evaluator-select { width:100%; }
+  .program-results-evaluator-select select { flex:1; max-width:none; }
+}
