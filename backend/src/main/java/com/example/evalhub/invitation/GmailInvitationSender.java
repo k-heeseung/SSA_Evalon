@@ -37,7 +37,7 @@ public class GmailInvitationSender implements InvitationSender {
             String token = token();
             String body;
             try { body = json.writeValueAsString(Map.of("raw", encodeMessage(settings.senderEmail(), recipient,
-                    temporaryPassword, settings.loginUrl(), role))); }
+                    temporaryPassword, settings.loginUrlFor(role), role))); }
             catch (Exception e) { throw new DeliveryException("MESSAGE_ENCODING_ERROR", false); }
             HttpResponse<String> response = request(HttpRequest.newBuilder(URI.create("https://gmail.googleapis.com/gmail/v1/users/me/messages/send"))
                     .timeout(Duration.ofSeconds(30)).header("Authorization", "Bearer " + token)

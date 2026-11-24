@@ -38,6 +38,31 @@ class GmailInvitationSenderTests {
         String body = new String(Base64.getMimeDecoder().decode(mime.split("\r\n\r\n",2)[1]), StandardCharsets.UTF_8);
         assertThat(body).startsWith("매니저 계정이 생성되었습니다.\n\n로그인 아이디: manager@example.com\n임시 비밀번호: random-password\n");
     }
+    @Test void loginLinkMatchesRecipientRoleEvenIfConfiguredUrlHasAnotherRole() {
+        for (String query : new String[] {"", "?role=evaluator"}) {
+            var settings = new InvitationSettings(false, "", "", "", "", "https://example.com/login" + query, "",
+                    java.time.Duration.ofDays(7), 2);
+            assertThat(settings.loginUrlFor(com.example.evalhub.entity.Role.MANAGER)).isEqualTo("https://example.com/login?role=manager");
+            assertThat(settings.loginUrlFor(com.example.evalhub.entity.Role.EVALUATOR)).isEqualTo("https://example.com/login?role=evaluator");
+        }
+        var other = new InvitationSettings(false, "", "", "", "", "https://example.com/login?next=%2Fhome&role=evaluator#top", "",
+                java.time.Duration.ofDays(7), 2);
+        assertThat(other.loginUrlFor(com.example.evalhub.entity.Role.MANAGER)).isEqualTo("https://example.com/login?next=%2Fhome&role=manager#top");
+    }
+    @Test void sentManagerMailContainsManagerLoginLink() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        doReturn(response(200,"{\"access_token\":\"token\",\"expires_in\":3600}"), response(200,"{\"id\":\"mail-1\"}"))
+                .when(http).send(any(), any(HttpResponse.BodyHandler.class));
+        var json = spy(new ObjectMapper());
+        var sender = new GmailInvitationSender(InvitationSecretsTests.settings(true, InvitationSecretsTests.KEY), json, http);
+        sender.send("manager@example.com", "password", com.example.evalhub.entity.Role.MANAGER);
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(json).writeValueAsString(payload.capture());
+        String raw = (String) ((Map<?, ?>) payload.getValue()).get("raw");
+        String mime = new String(Base64.getUrlDecoder().decode(raw), StandardCharsets.UTF_8);
+        String body = new String(Base64.getMimeDecoder().decode(mime.split("\r\n\r\n",2)[1]), StandardCharsets.UTF_8);
+        assertThat(body).endsWith("로그인: http://localhost:3000/login?role=manager\n");
+    }
     @Test void unauthorizedResponseRefreshesTokenOnceAndSuccessfulTokensAreCached() throws Exception {
         HttpClient http = mock(HttpClient.class);
         doReturn(

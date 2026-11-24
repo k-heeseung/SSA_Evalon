@@ -38,7 +38,7 @@ services:
       EVALHUB_BOOTSTRAP_ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
 
       EVALHUB_MAIL_ENABLED: ${EVALHUB_MAIL_ENABLED:-false}
-      EVALHUB_MAIL_LOGIN_URL: https://evalon.skku.edu/login?role=evaluator
+      EVALHUB_MAIL_LOGIN_URL: https://evalon.skku.edu/login
       EVALHUB_MAIL_ENCRYPTION_KEY: ${EVALHUB_MAIL_ENCRYPTION_KEY:?Mail encryption key is required}
       EVALHUB_GMAIL_CLIENT_ID: ${EVALHUB_GMAIL_CLIENT_ID:-}
       EVALHUB_GMAIL_CLIENT_SECRET: ${EVALHUB_GMAIL_CLIENT_SECRET:-}

@@ -38,7 +38,8 @@ evalhub:
     client-secret: ${EVALHUB_GMAIL_CLIENT_SECRET:}
     refresh-token: ${EVALHUB_GMAIL_REFRESH_TOKEN:}
     sender-email: ${EVALHUB_MAIL_SENDER:}
-    login-url: ${EVALHUB_MAIL_LOGIN_URL:http://localhost:3000/login?role=evaluator}
+    # role 파라미터는 발송할 때 받는 계정의 역할에 맞춰 붙인다 (InvitationSettings.loginUrlFor).
+    login-url: ${EVALHUB_MAIL_LOGIN_URL:http://localhost:3000/login}
     encryption-key: ${EVALHUB_MAIL_ENCRYPTION_KEY:}
     retention: ${EVALHUB_MAIL_RETENTION:7d}
     max-attempts: ${EVALHUB_MAIL_MAX_ATTEMPTS:5}
